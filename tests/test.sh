@@ -248,6 +248,7 @@ test_alias_allocation() {
 
 test_git_binding_and_commit() {
   local repository="$TEST_TEMPORARY/git-project"
+  local initial_repository="$TEST_TEMPORARY/initial-version-project"
   local bare_repository="$TEST_TEMPORARY/remote.git"
   local fake_bin="$TEST_TEMPORARY/fake-bin"
   local fake_key="$TEST_TEMPORARY/fake-key"
@@ -263,7 +264,7 @@ test_git_binding_and_commit() {
   : > "$fake_key"
 
   GIT_ROOT="$repository"
-  CURRENT_REPOSITORY_OWNER="example-org"
+  CURRENT_REPOSITORY_OWNER="johnjoe"
   CURRENT_REPOSITORY_NAME="example-repo"
   BOUND_USERNAME="johnjoe"
   BOUND_EMAIL="johnjoe@example.com"
@@ -275,7 +276,7 @@ test_git_binding_and_commit() {
     push_remote="$(git -C "$repository" remote get-url --push origin)"
     saved_name="$(git -C "$repository" config --local user.name)"
     saved_email="$(git -C "$repository" config --local user.email)"
-    assert_equal "git@github-johnjoe:example-org/example-repo.git" "$remote" "normalizes origin to the bound account alias"
+    assert_equal "git@github-johnjoe:johnjoe/example-repo.git" "$remote" "normalizes origin to the matching owner account alias"
     assert_equal "$remote" "$push_remote" "pins the origin push address to the same account alias"
     assert_equal "johnjoe" "$saved_name" "commit display name equals GitHub username"
     assert_equal "johnjoe@example.com" "$saved_email" "stores repository-local account email"
@@ -299,6 +300,21 @@ test_git_binding_and_commit() {
   else
     fail_test "commits staged project changes"
   fi
+
+  mkdir -p "$initial_repository"
+  git -C "$initial_repository" init -q
+  git -C "$initial_repository" config user.name tester
+  git -C "$initial_repository" config user.email tester@example.com
+  write_changelog "$initial_repository/CHANGELOG.md" "8.9.1" "8.8.9"
+  GIT_ROOT="$initial_repository"
+  if prepare_and_commit; then
+    message="$(git -C "$initial_repository" log -1 --pretty=%s)"
+    assert_equal "Release 8.9.1" "$message" "a detected version takes priority over Initial commit"
+  else
+    fail_test "first commit uses its detected release version"
+  fi
+
+  GIT_ROOT="$repository"
 
   create_pinned_ssh_wrapper
   if grep -Fq 'IdentitiesOnly=yes' "$PINNED_SSH_WRAPPER" &&
@@ -372,7 +388,7 @@ test_guided_updates() {
 
   git -C "$repository" init -q
   GIT_ROOT="$repository"
-  CURRENT_REPOSITORY_OWNER="example-org"
+  CURRENT_REPOSITORY_OWNER="old-user"
   CURRENT_REPOSITORY_NAME="old-repo"
   BOUND_USERNAME="old-user"
   BOUND_EMAIL="101+old-user@users.noreply.github.com"
@@ -383,11 +399,11 @@ test_guided_updates() {
   UPDATE_ACCOUNT_USERNAME="old-user"
   UPDATE_OLD_USERNAME="old-user"
   UPDATE_OLD_EMAIL="101+old-user@users.noreply.github.com"
-  UPDATE_OLD_OWNER="example-org"
+  UPDATE_OLD_OWNER="old-user"
   UPDATE_OLD_REPOSITORY="old-repo"
   UPDATE_NEW_USERNAME="old-user"
   UPDATE_NEW_EMAIL="$UPDATE_OLD_EMAIL"
-  UPDATE_NEW_OWNER="example-org"
+  UPDATE_NEW_OWNER="old-user"
   UPDATE_NEW_REPOSITORY="new-repo"
   UPDATE_OLD_ALIAS="github-old-user"
   UPDATE_NEW_ALIAS="github-old-user"
@@ -396,7 +412,7 @@ test_guided_updates() {
   if update_apply_validated_settings no; then
     remote="$(git -C "$repository" remote get-url origin)"
     push_remote="$(git -C "$repository" remote get-url --push origin)"
-    assert_equal "git@github-old-user:example-org/new-repo.git" "$remote" "repository-only update changes the origin repository name"
+    assert_equal "git@github-old-user:old-user/new-repo.git" "$remote" "repository-only update changes the origin repository name"
     assert_equal "$remote" "$push_remote" "repository-only update changes the explicit push address"
     assert_equal "old-user" "$(git -C "$repository" config --local user.name)" "repository-only update keeps the account identity"
   else
@@ -435,9 +451,14 @@ test_guided_updates() {
   fi
 
   if update_parse_repository_target "https://github.com/new-owner/moved-repo/settings" "new-user"; then
-    assert_equal "new-owner/moved-repo" "$UPDATE_NEW_OWNER/$UPDATE_NEW_REPOSITORY" "combined update accepts a full moved-repository URL"
+    fail_test "update rejects a repository owned by another account"
   else
-    fail_test "combined update accepts a full moved-repository URL"
+    pass "update rejects a repository owned by another account"
+  fi
+  if update_parse_repository_target "https://github.com/new-user/moved-repo/settings" "new-user"; then
+    assert_equal "new-user/moved-repo" "$UPDATE_NEW_OWNER/$UPDATE_NEW_REPOSITORY" "combined update accepts a full same-owner repository URL"
+  else
+    fail_test "combined update accepts a full same-owner repository URL"
   fi
   if update_parse_repository_target "renamed-again.git" "new-user"; then
     assert_equal "new-user/renamed-again" "$UPDATE_NEW_OWNER/$UPDATE_NEW_REPOSITORY" "combined update accepts only a new repository name"
@@ -488,6 +509,7 @@ test_update_prompt_flow() {
   local saved_identify_key_username=""
   local saved_run_git_with_identity=""
   local original_ui_language="$UI_LANGUAGE"
+  local original_advanced_language="$ADVANCED_LANGUAGE"
   local original_advanced_language="${ADVANCED_LANGUAGE:-en}"
   local output=""
   local before_git_config=""
@@ -581,8 +603,10 @@ test_private_configuration() {
   local original_private_config="$PRIVATE_CONFIG_FILE"
   local original_ui_language="$UI_LANGUAGE"
   local original_theme="$THEME"
+  local original_advanced_language="${ADVANCED_LANGUAGE:-en}"
   local engine_checksum_before=""
   local engine_checksum_after=""
+  local tag_setting_output=""
 
   engine_checksum_before="$(cksum "$PROJECT_DIRECTORY/git-auto.sh" "$PROJECT_DIRECTORY"/src/*.sh | cksum)"
   PRIVATE_DIRECTORY="$config_root/private"
@@ -591,6 +615,7 @@ test_private_configuration() {
   load_accounts
 
   assert_equal "" "$(read_saved_language)" "new private config starts without a saved language"
+  assert_equal "false" "$(read_saved_history_tags)" "historical-release tags default to disabled"
   if choose_interface_language no >/dev/null 2>&1 <<< "2"; then
     assert_equal "zh" "$(read_saved_language)" "first language choice is written into private config"
   else
@@ -606,6 +631,26 @@ test_private_configuration() {
     pass "preferences create no application config directory"
   else
     fail_test "preferences create no application config directory"
+  fi
+
+  ADVANCED_LANGUAGE="zh"
+  tag_setting_output="$(history_tags_setting_menu <<< "y")"
+  assert_equal "true" "$(read_saved_history_tags)" "enabling historical-release tags saves the preference"
+  if grep -Fxq 'add-tags-to-historical-release: enabled' "$PRIVATE_CONFIG_FILE" &&
+     grep -Fq '为每个版本创建对应的 vX.Y.Z 标签吗？' <<< "$tag_setting_output" &&
+     grep -Fq '版本标记会显示在 GitHub 的 Tags 页面；不会改变文件内容。' <<< "$tag_setting_output" &&
+     grep -Fq '[是(y)/否(n)，默认否]:' <<< "$tag_setting_output"; then
+    pass "enabled historical-release tag setting uses the documented field and explanation"
+  else
+    fail_test "enabled historical-release tag setting uses the documented field and explanation"
+  fi
+
+  tag_setting_output="$(history_tags_setting_menu <<< "")"
+  assert_equal "false" "$(read_saved_history_tags)" "the tag setting prompt defaults to disabled"
+  if ! grep -Fq 'add-tags-to-historical-release:' "$PRIVATE_CONFIG_FILE"; then
+    pass "disabling historical-release tags removes the private config field"
+  else
+    fail_test "disabling historical-release tags removes the private config field"
   fi
 
   add_or_update_account "test-user" "test-user@example.com"
@@ -628,6 +673,7 @@ test_private_configuration() {
   PRIVATE_DIRECTORY="$original_private_directory"
   PRIVATE_CONFIG_FILE="$original_private_config"
   UI_LANGUAGE="$original_ui_language"
+  ADVANCED_LANGUAGE="$original_advanced_language"
   apply_theme "$original_theme"
   load_accounts
 }
@@ -956,6 +1002,46 @@ test_origin_alias_identity_selection() {
   UI_LANGUAGE="$original_language"
 }
 
+test_repository_owner_account_enforcement() {
+  local repository="$TEST_TEMPORARY/repository-owner-enforcement"
+  local original_root="${GIT_ROOT:-}"
+  local original_language="$UI_LANGUAGE"
+  local output=""
+
+  mkdir -p "$repository"
+  git -C "$repository" init -q
+  git -C "$repository" config --local github-auto.username davidsdd
+  GIT_ROOT="$repository"
+  CURRENT_REPOSITORY_OWNER="sd800"
+  CURRENT_REPOSITORY_NAME="github-setup-push-auto-script"
+  ACCOUNT_USERNAMES=("davidsdd" "sd800")
+  ACCOUNT_EMAILS=("davidsdd@example.com" "sd800@example.com")
+  ACCOUNT_COUNT=2
+  UI_LANGUAGE="en"
+
+  output="$(select_account_for_repository "$CURRENT_REPOSITORY_OWNER" davidsdd 2>&1)"
+  assert_equal "sd800" "$BOUND_USERNAME" "repository owner overrides a mismatched saved or supplied account"
+  if printf '%s\n' "$output" | grep -Fq 'The mismatched binding will not be used.'; then
+    pass "mismatched repository binding is explained before correction"
+  else
+    fail_test "mismatched repository binding is explained before correction"
+  fi
+
+  BOUND_USERNAME="davidsdd"
+  BOUND_EMAIL="davidsdd@example.com"
+  BOUND_SSH_ALIAS="github-davidsdd"
+  BOUND_IDENTITY_FILE="$TEST_TEMPORARY/davidsdd-key"
+  : > "$BOUND_IDENTITY_FILE"
+  if save_project_binding >/dev/null 2>&1; then
+    fail_test "binding refuses an account that differs from the repository owner"
+  else
+    pass "binding refuses an account that differs from the repository owner"
+  fi
+
+  GIT_ROOT="$original_root"
+  UI_LANGUAGE="$original_language"
+}
+
 test_commit_cancellation_boundary() {
   local repository="$TEST_TEMPORARY/commit-cancellation"
   local empty_repository="$TEST_TEMPORARY/empty-repository"
@@ -1087,6 +1173,9 @@ test_historical_release_import() {
   local releases="$TEST_TEMPORARY/historical releases"
   local first="$releases/project-1.0.0"
   local second="$releases/project-2.0.0"
+  local key_notes="$second/private-key-format-notes.txt"
+  local real_key="$second/renamed-private-key.txt"
+  local putty_key="$second/legacy-key.ppk"
   local remote="$TEST_TEMPORARY/history-remote.git"
   local fake_key="$TEST_TEMPORARY/history-fake-key"
   local messages=""
@@ -1098,6 +1187,7 @@ test_historical_release_import() {
   local head_count=""
   local unrelated_commit=""
   local original_max="$HISTORY_MAX_FILE_BYTES"
+  local risk_output=""
 
   mkdir -p "$first/.git" "$second/nested/.git" "$releases/notes"
   printf '# first\n' > "$first/README.md"
@@ -1113,6 +1203,35 @@ test_historical_release_import() {
   printf 'must not be imported\n' > "$second/nested/.git/config"
   printf '## 2.0.0 - August 3, 2025\n' > "$second/CHANGELOG.md"
   printf 'token=value\n' > "$second/.env"
+  printf '%s\n' \
+    'A private-key header may look like this:' \
+    '-----BEGIN OPENSSH PRIVATE KEY-----' > "$key_notes"
+  printf '%s\n' \
+    '-----BEGIN OPENSSH PRIVATE KEY-----' \
+    'b3BlbnNzaC1rZXktdjEAAAAA' \
+    '-----END OPENSSH PRIVATE KEY-----' > "$real_key"
+  printf '%s\n' \
+    'PuTTY-User-Key-File-3: ssh-ed25519' \
+    'Encryption: none' > "$putty_key"
+
+  if history_contains_private_key_header "$PROJECT_DIRECTORY/src/40-history.sh"; then
+    fail_test "private-key detector does not report its own source code"
+  else
+    pass "private-key detector does not report its own source code"
+  fi
+  if history_contains_private_key_header "$key_notes"; then
+    fail_test "private-key detector ignores explanatory text that quotes a key header"
+  else
+    pass "private-key detector ignores explanatory text that quotes a key header"
+  fi
+  assert_true "private-key detector recognizes a renamed OpenSSH key" history_contains_private_key_header "$real_key"
+  assert_true "private-key detector recognizes a PuTTY key" history_contains_private_key_header "$putty_key"
+  assert_true "private-key filename detector recognizes ppk files" history_sensitive_name "archived-key.ppk"
+  HISTORY_REBUILD_DATES=true
+  assert_equal "2024-01-02T12:00:00 +0000" "$(history_commit_date_for_release '2024-01-02')" "release-date reconstruction defaults to an explicit historical timestamp"
+  HISTORY_REBUILD_DATES=false
+  assert_equal "" "$(history_commit_date_for_release '2024-01-02')" "declining date reconstruction leaves commit time to Git"
+  HISTORY_REBUILD_DATES=true
 
   if normalize_history_directory_input "file://${releases// /%20}"; then
     assert_equal "$(cd "$releases" && pwd -P)" "$HISTORY_NORMALIZED_DIRECTORY" "normalizes dragged file URLs for release folders"
@@ -1147,6 +1266,15 @@ test_historical_release_import() {
   else
     fail_test "detects sensitive-looking files before history construction"
   fi
+  ADVANCED_LANGUAGE="zh"
+  risk_output="$(history_show_paginated_list sensitive)"
+  if grep -Fq '原因：这个文件名通常用于保存凭据、私人配置或密钥材料。' <<< "$risk_output" &&
+     grep -Fq '原因：文件开头符合常见私钥格式。' <<< "$risk_output"; then
+    pass "sensitive-file review explains the exact reason in Chinese"
+  else
+    fail_test "sensitive-file review explains the exact reason in Chinese"
+  fi
+  ADVANCED_LANGUAGE="en"
   HISTORY_MAX_FILE_BYTES="$original_max"
 
   git init --bare -q "$remote"
@@ -1156,6 +1284,8 @@ test_historical_release_import() {
   BOUND_SSH_ALIAS="github-history-user"
   BOUND_IDENTITY_FILE="$fake_key"
   HISTORY_REMOTE_URL="$remote"
+  CURRENT_REPOSITORY_OWNER="history-user"
+  CURRENT_REPOSITORY_NAME="history-repository"
   HISTORY_ADD_GITIGNORE=true
   HISTORY_GITIGNORE_CONTENT="*.tmp
 .cache/"
@@ -1236,8 +1366,6 @@ test_historical_release_import() {
 
 test_paged_account_selection() {
   local saved_ui_prompt_function=""
-  local saved_advanced_prompt_function=""
-  local saved_advanced_add_function=""
   local menu_output="$TEST_TEMPORARY/paged-account-menu.txt"
   local detail_output="$TEST_TEMPORARY/github-target-summary.txt"
   local selection_status=0
@@ -1276,26 +1404,10 @@ test_paged_account_selection() {
   fi
   eval "$saved_ui_prompt_function"
 
-  saved_advanced_prompt_function="$(declare -f advanced_prompt_value)"
-  saved_advanced_add_function="$(declare -f advanced_add_account)"
-  advanced_prompt_value() {
-    printf '%s' "$MENU_TEST_CHOICE"
-  }
-  advanced_add_account() {
-    ADVANCED_ADD_CALLED="yes"
-    BOUND_USERNAME="added-account"
-    BOUND_EMAIL="added@example.com"
-  }
-
   ACCOUNT_USERNAMES=("account-one" "account-two")
   ACCOUNT_EMAILS=("one@example.com" "two@example.com")
   ACCOUNT_COUNT=2
-  ADVANCED_ADD_CALLED="no"
-  selection_status=0
-  MENU_TEST_CHOICE="9"
-  advanced_select_account_for_history "organization" > "$menu_output" 2>&1 || selection_status=$?
-  assert_equal "0" "$selection_status" "nine adds an account while no more than eight are saved"
-  assert_equal "yes" "$ADVANCED_ADD_CALLED" "the small-menu add option opens account setup"
+  print_account_menu_options 0 yes en > "$menu_output"
   if grep -Fq '  9) Add another account' "$menu_output" &&
      grep -Fq '  0) Cancel' "$menu_output"; then
     pass "small account menus display nine for add and zero last"
@@ -1350,14 +1462,6 @@ test_paged_account_selection() {
   paged_choice_to_index "2" 1 "$ACCOUNT_COUNT"
   assert_equal "23" "$PAGED_CHOICE_INDEX" "page-relative labels select the matching overflow item"
 
-  ACCOUNT_COUNT=9
-  ADVANCED_ADD_CALLED="no"
-  selection_status=0
-  MENU_TEST_CHOICE="z"
-  advanced_select_account_for_history "organization" > "$menu_output" 2>&1 || selection_status=$?
-  assert_equal "0" "$selection_status" "z adds an account after more than eight are saved"
-  assert_equal "yes" "$ADVANCED_ADD_CALLED" "the long-menu add option opens account setup"
-
   unset GIT_AUTO_DEBUG_DETAILS
   github_target_summary \
     normal account-one owner-name repository-name author-name author@example.com \
@@ -1389,8 +1493,22 @@ test_paged_account_selection() {
   fi
   unset GIT_AUTO_DEBUG_DETAILS
 
-  eval "$saved_advanced_prompt_function"
-  eval "$saved_advanced_add_function"
+}
+
+test_project_release_policy() {
+  local english_version=""
+  local chinese_version=""
+
+  english_version="$(sed -nE 's/^## ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' "$PROJECT_DIRECTORY/CHANGELOG.md" | sed -n '1p')"
+  chinese_version="$(sed -nE 's/^## ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' "$PROJECT_DIRECTORY/CHANGELOG_zh.md" | sed -n '1p')"
+  assert_equal "3.3.1" "$english_version" "English changelog declares release 3.3.1"
+  assert_equal "$english_version" "$chinese_version" "English and Chinese changelogs declare the same release"
+  if [[ "$english_version" != *4* ]] &&
+     [[ "$english_version" =~ ^[1-9][0-9]*\.[1-9][0-9]*\.[1-9][0-9]*$ ]]; then
+    pass "new project release obeys the no-4 and no-zero-component rule"
+  else
+    fail_test "new project release obeys the no-4 and no-zero-component rule"
+  fi
 }
 
 test_user_interface_symbols() {
@@ -1496,6 +1614,7 @@ test_public_documentation
 test_project_root_identity
 test_existing_repository_state
 test_origin_alias_identity_selection
+test_repository_owner_account_enforcement
 test_commit_cancellation_boundary
 test_central_root_launcher_dispatch
 test_self_exclusion_modes
@@ -1505,6 +1624,7 @@ test_update_prompt_flow
 test_historical_release_import
 test_paged_account_selection
 test_user_interface_symbols
+test_project_release_policy
 printf '1..%s\n' "$TEST_COUNT"
 
 if [ "$FAILURE_COUNT" -gt 0 ]; then

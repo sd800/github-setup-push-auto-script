@@ -10,7 +10,7 @@ The everyday interface stays deliberately small:
 
 - `./g.sh`: Detect the current Git repository, verify its GitHub account and destination, review changes, commit, and push.
 - `./g.sh new`: Add or import a GitHub account, then optionally use it for the current project.
-- `./g.sh update`: Synchronize local settings after a GitHub username, repository name, or repository owner changes.
+- `./g.sh update`: Synchronize local settings after a GitHub username or repository name changes.
 - `./g.sh menu`: Open tool menu for account, project verification, preference, and advanced features.
 
 SSH identities, account verification, repository-specific authorship, release commit messages, upstream branches, and strict push identity are handled behind this interface.
@@ -111,6 +111,14 @@ email: alice@example.com
 
 Every field has its own line, and a blank line separates accounts. Each account has only a GitHub username and commit email. Commit display names are always derived from GitHub usernames.
 
+Historical-release version tags are disabled by default. Enabling them under Advanced features adds this optional line:
+
+```text
+add-tags-to-historical-release: enabled
+```
+
+Turning the setting off removes the entire line from `private/config.txt`.
+
 The central engine creates `private/` with owner-only directory permissions and `config.txt` with owner-only file permissions. It writes changes atomically and never places private keys, passphrases, access tokens, or passwords in this file.
 
 Every user of the public project gets an independent ignored `private/` folder. Personalized executable copies are not needed.
@@ -131,9 +139,9 @@ The default workflow follows the state of the project:
 1. Treat the folder containing `g.sh` as the exact project root.
 2. Detect an existing Git repository before doing anything else. Existing commits, branches, staged changes, and remotes are preserved, and `git init` is not run again. If no repository exists, the script explains that `git init` creates local metadata only, then initializes it.
 3. Stop before changing files when HEAD is detached, merge conflicts remain, or a merge, rebase, cherry-pick, or revert is unfinished.
-4. Read `origin`. If it uses an SSH Host such as `github800`, verify that Host's exact key and GitHub username first. Ask for a repository address only when `origin` does not identify one.
-5. Prefer the repository's saved account, then a verified origin account, then an unambiguous owner match. Show a username choice only when no safe automatic match exists.
-6. Show the selected GitHub account followed by the destination repository, confirm read access, then save the repository-local settings. Technical identity details stay hidden during normal use and remain available through the script's diagnostic interface.
+4. Read `origin` to determine the exact GitHub `owner/repository`. Ask for a repository address only when `origin` does not identify one.
+5. Use only the account whose username matches the repository owner. A mismatched saved account, default `github.com` key, or earlier account choice is ignored and corrected; if the owner account has not been configured, request only its commit email and finish its SSH setup.
+6. Show the owner account followed by the destination repository, check the endpoint with that account's verified key, then save the repository-local settings. The script explains that this read-only response is not a separate proof of push permission; `git push` provides the final permission check.
 7. Show `git status --short` before staging. The user can accept the suggested commit message, replace it, or enter `:cancel`. Only after that decision does the script run `git add -A`.
 8. Create the commit, show what it contains, and push the current branch with the one verified key. Ordinary pushes never use force.
 
@@ -141,13 +149,13 @@ A clean repository creates no unnecessary commit. An empty repository with no pr
 
 ## GitHub account setup
 
-`./g.sh new` and the central account menu use the same account rules:
+Inside a project with a recognizable GitHub `origin`, `./g.sh new` derives the required username from the repository owner and never offers another account. Outside such a project, the central account menu can add any personal account. SSH setup follows these rules:
 
-1. When the current project has an SSH `origin` whose verified account has not been saved yet, check that Host and key first. If GitHub confirms the account, only the commit email is requested.
-2. Otherwise scan `~/.ssh/config` and its `Include` files for concrete entries whose effective `HostName` is `github.com`.
+1. In a project, request only the owner account's commit email when that account is not already saved.
+2. Scan `~/.ssh/config` and its `Include` files for concrete entries whose effective `HostName` is `github.com`.
 3. Resolve each distinct candidate key once and ask GitHub which username it authenticates as.
-4. Offer to save a verified account that is not yet in `private/config.txt`.
-5. If no reusable identity exists, ask for the GitHub username and commit email, then show the exact key path and SSH Host that would be added.
+4. Reuse a key only when the verified username exactly matches the required account.
+5. If no reusable identity exists, show the exact key path and SSH Host that would be added.
 6. Create a dedicated ED25519 key only after confirmation, guide the user through adding its public key to the correct GitHub account, and verify the returned username before saving the account.
 
 New SSH Host names use `github-USERNAME`. Collisions are handled automatically with `-1`, `-2`, and later numbers. Each newly created account receives a different private key; an existing key is reused only after GitHub confirms the exact username. A failed network check does not silently create a replacement key: the result is shown and the user can retry first.
@@ -156,11 +164,11 @@ The suggested private commit email uses GitHub's current `ID+USERNAME@users.nore
 
 ## Multiple-account protection
 
-The shared private profile makes configured accounts available to every project, but each repository still uses exactly one account for a push.
+The shared private profile makes configured accounts available to every project, but each repository uses only the account whose username matches the repository owner.
 
 Repository-specific values remain only in that repository's `.git/config`: username, email, SSH alias, identity file, and normalized `origin`. Before each network operation, a temporary SSH wrapper enables `IdentitiesOnly=yes` and pins the selected private key. Other agent-loaded keys cannot silently become fallback identities.
 
-Organization repositories are bound to a selected personal account; the organization name is never treated as a login identity.
+This strict owner-account workflow intentionally stops when `owner/repository` belongs to a different username. It never treats the ability to read a public repository as permission to bind or push it from another configured account.
 
 ## Repository address input
 
@@ -184,17 +192,17 @@ Query strings, fragments, trailing slashes, `.git`, and repository page paths ar
 
 ## Username or repository changes
 
-After completing a username change, repository rename, or repository transfer on GitHub, run `./g.sh update` in the affected project.
+After completing a username change or repository rename on GitHub, run `./g.sh update` in the affected project.
 
-The flow assumes the change is already complete on GitHub. It asks what changed and requests only the relevant new information. Before writing anything, it verifies that the existing key now authenticates as the new username and that the account can read the exact renamed or transferred repository. A final review lists every local file and Git setting that will change.
+The flow assumes the change is already complete on GitHub. It asks what changed and requests only the relevant new information. The repository owner is always kept equal to the account username; a pasted URL under another owner is rejected. Before writing anything, it verifies that the existing key now authenticates as the new username and that the renamed repository responds to that key. A final review lists every local file and Git setting that will change.
 
 Username changes reuse the existing key, create a collision-safe username-based SSH Host when needed, preserve the previous Host for other projects, update the shared private account entry, and synchronize this repository's author and both `origin` URLs. Project files, branches, commits, and the GitHub repository are not modified or pushed. Canceling the final review leaves `private/config.txt`, `~/.ssh/config`, and the repository's `.git/config` unchanged.
 
 ## Commit messages and release versions
 
-Every real commit remains user-confirmed. The engine shows the working-tree status and proposes a message before it stages all changes. After confirmation it runs `git add -A`, shows the staged summary, and creates the commit.
+Every real commit remains user-confirmed. The engine shows the working-tree status and proposes a message before it stages all changes. A detected release version always produces `Release X.Y.Z`, including when the repository has no earlier commit; `Initial commit` is used only when that first snapshot has no detectable version. After confirmation the script runs `git add -A`, shows the staged summary, and creates the commit.
 
-For an existing repository, release versions are discovered in this order:
+For every commit, including the first one, release versions are discovered in this order:
 
 1. A valid root `package.json` version.
 2. Root `CHANGELOG`, `CHANGELOG.md`, or `CHANGELOG.txt`.
@@ -214,7 +222,9 @@ It discovers or accepts version mappings, sorts them by SemVer, and builds one c
 
 When archived releases lack a root `.gitignore`, the user can paste one shared set of rules directly into the terminal. It is added only to missing reconstructed snapshots and never written back to the source folders.
 
-The flow checks for sensitive-looking and oversized files, offers lightweight version tags, displays `git log --oneline --reverse`, and verifies the selected GitHub identity before publishing. Replacing an existing remote `main` requires explicit confirmation and an exact `--force-with-lease`. No backup branch is created, and other remote branches are unchanged.
+The flow checks for sensitive-looking and oversized files, displays `git log --oneline --reverse`, and verifies the selected GitHub identity before publishing. Reconstructed commit timestamps use reliable detected release dates by default. The user can decline; in that case, no historical dates are assigned and each commit keeps the local system time that Git records automatically when creating it.
+
+Matching lightweight `vX.Y.Z` tags are disabled by default. They can be enabled under Advanced features, appear on GitHub's Tags page, and do not change file contents. Replacing an existing remote `main` requires explicit confirmation and an exact `--force-with-lease`. No backup branch is created, and other remote branches are unchanged.
 
 The engine implements snapshot copying itself and does not depend on `rsync`.
 

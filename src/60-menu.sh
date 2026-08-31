@@ -438,20 +438,28 @@ check_and_repair() {
         "Current repository: ${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME}" \
         "当前仓库：${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME}"
       username="$(git -C "$GIT_ROOT" config --local --get github-auto.username 2>/dev/null || true)"
-      if [ -n "$username" ] && account_index "$username" >/dev/null 2>&1; then
+      if [ -n "$username" ] &&
+         [ "$(lowercase "$username")" = "$(lowercase "$CURRENT_REPOSITORY_OWNER")" ] &&
+         account_index "$username" >/dev/null 2>&1; then
         success \
           "Current project account: $username" \
           "当前项目使用的账号：$username"
       else
-        warn \
-          "This repository has no saved github-auto.username in its local .git/config." \
-          "当前仓库的本地 .git/config 中还没有保存 github-auto.username。"
+        if [ -n "$username" ]; then
+          warn \
+            "This repository is saved with account $username, but its GitHub owner is $CURRENT_REPOSITORY_OWNER. The mismatched account will not be used." \
+            "当前仓库保存的账号是 ${username}，但 GitHub 仓库属于 ${CURRENT_REPOSITORY_OWNER}。脚本不会继续使用这个不匹配的账号。"
+        else
+          warn \
+            "This repository has no saved GitHub account in its local .git/config." \
+            "当前仓库的本地 .git/config 中还没有保存 GitHub 账号。"
+        fi
         muted \
-          "The next step selects an account, verifies its SSH key and repository access, then saves only repository-local Git settings." \
-          "下一步会选择账号，核对 SSH 密钥和仓库访问权限，然后只保存当前仓库自己的本地 Git 设置。"
+          "The next step uses repository owner $CURRENT_REPOSITORY_OWNER, verifies that account's SSH key and repository endpoint, then corrects only repository-local Git settings." \
+          "下一步会固定使用仓库所属账号 ${CURRENT_REPOSITORY_OWNER}，核对该账号的 SSH 密钥和仓库地址，然后只修正当前仓库自己的本地 Git 设置。"
         if ui_prompt_yes_no \
-          "Choose and verify the account for this repository now?" \
-          "现在为这个仓库选择并核对 GitHub 账号吗？" \
+          "Verify and bind this repository to its owner now?" \
+          "现在核对仓库所属账号并修正本地绑定吗？" \
           "yes"; then
           configure_project || return 1
         fi
@@ -480,18 +488,37 @@ check_and_repair() {
 
 run_new_command() {
   local account_ready=false
+  local project_owner_required=false
+  local index=""
+  local email=""
 
   require_core_commands
-  if locate_project no &&
-     read_origin_repository &&
-     identify_origin_ssh_account &&
-     ! account_index "$ORIGIN_VERIFIED_USERNAME" >/dev/null 2>&1; then
-    if select_verified_origin_account yes; then
+  if locate_project no && read_origin_repository; then
+    project_owner_required=true
+    if index="$(account_index "$CURRENT_REPOSITORY_OWNER" 2>/dev/null)"; then
+      SELECTED_USERNAME="${ACCOUNT_USERNAMES[$index]}"
+      SELECTED_EMAIL="${ACCOUNT_EMAILS[$index]}"
+      account_ready=true
+      info \
+        "This repository belongs to saved account $SELECTED_USERNAME, so no account choice is needed." \
+        "当前仓库属于已保存账号 ${SELECTED_USERNAME}，无需再选择其他账号。"
+    else
+      heading \
+        "Add the account that owns this repository" \
+        "添加当前仓库所属的 GitHub 账号"
+      muted \
+        "The repository is ${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME}. To prevent accounts from being mixed, this project can add and use only account $CURRENT_REPOSITORY_OWNER." \
+        "当前仓库是 ${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME}。为避免多个账号相互串用，这个项目只能添加并使用账号 ${CURRENT_REPOSITORY_OWNER}。"
+      email="$(prompt_account_email "$CURRENT_REPOSITORY_OWNER")" || return 1
+      setup_or_reuse_account "$CURRENT_REPOSITORY_OWNER" "$email" || return 1
       account_ready=true
     fi
   fi
 
   if [ "$account_ready" = false ]; then
+    if [ "$project_owner_required" = true ]; then
+      return 1
+    fi
     if ! run_account_setup; then
       return 1
     fi

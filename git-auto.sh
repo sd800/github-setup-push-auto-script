@@ -15,6 +15,7 @@ set -uo pipefail
 
 LANGUAGE_FIELD_PREFIX="language:"
 THEME_FIELD_PREFIX="display-theme:"
+HISTORY_TAGS_FIELD_PREFIX="add-tags-to-historical-release:"
 SSH_BLOCK_PREFIX="github-auto"
 INITIAL_COMMIT_MESSAGE="Initial commit"
 DEFAULT_COMMIT_MESSAGE="Update"

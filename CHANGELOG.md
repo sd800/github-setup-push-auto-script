@@ -6,6 +6,92 @@
 
 All notable changes to Auto Script for GitHub Setup and Push are documented in this file.
 
+## 3.3.1 - 2026-08-31
+
+### Changed
+
+- Made repository ownership the sole account-selection rule across `./g.sh`, `./g.sh new`, project verification, guided updates, and historical reconstruction. A repository under `owner/repository` can use only the configured account named `owner`.
+- Added owner-match guards to the retained origin-identity interface and the internal historical build and publish entry points; project-scoped `./g.sh new` now stops instead of falling back to arbitrary account setup when owner setup does not finish.
+- Rewrote remote-check messages to describe the exact read-only result without claiming that public read access proves ownership or push permission.
+- Limited `./g.sh update` to username and repository-name changes under the same account identity; repository addresses under a different owner are rejected.
+- Updated both README versions to document the strict owner-account flow and the exact remote-check boundary.
+
+### Fixed
+
+- Fixed a mismatched saved account or ordinary `github.com` default key taking priority over the repository owner, which could bind `davidsdd` to an `sd800/...` repository. Existing mismatched local bindings are now ignored and corrected on the next normal run.
+- Fixed versioned first snapshots suggesting `Initial commit`. Any detected version now has absolute commit-message priority and produces `Release X.Y.Z`.
+
+### Tests
+
+- Added regression coverage for mismatched saved and supplied accounts, save-time owner enforcement, versioned first commits, same-owner updates, and the project release-number policy.
+
+## 3.1.11 - 2026-08-31
+
+### Changed
+
+- Raised the complete dark-mode palette by another brightness level using softer, less saturated 256-color tones. Every selected color maintains at least 9.8:1 contrast against both black and a common dark-gray background.
+
+## 3.1.10 - 2026-08-31
+
+### Changed
+
+- Renamed the Advanced features setting to “Add version tags when rebuilding history” so the option describes the action directly.
+
+## 3.1.9 - 2026-08-31
+
+### Changed
+
+- Raised the brightness of the complete dark-mode palette with softened 256-color tones. Every selected color maintains at least 7.8:1 contrast against both black and a common dark-gray background without returning to neon-like high-intensity colors.
+
+## 3.1.8 - 2026-08-31
+
+### Changed
+
+- Replaced the dark-mode ANSI palette with moderate 256-color tones for headings, informational text, success, warnings, errors, and secondary text. Every selected color maintains greater than 5:1 contrast against both black and a common dark-gray background.
+
+## 3.1.7 - 2026-08-31
+
+### Changed
+
+- Removed the remaining high-intensity dark-mode colors and changed headings, success, warnings, and errors to standard ANSI tones after bright green and related status colors proved too strong.
+
+## 3.1.6 - 2026-08-31
+
+### Changed
+
+- Reduced the brightness of informational text in dark mode by replacing bright cyan with standard cyan.
+
+## 3.1.5 - 2026-08-31
+
+### Added
+
+- Added an Advanced features setting for historical-release `vX.Y.Z` tags. Tags default to off; only the enabled state writes `add-tags-to-historical-release: enabled` to `private/config.txt`, and disabling the setting removes that line.
+- Added an optional reconstructed-commit timestamp step that defaults to using reliable detected release dates. When declined, no historical dates are assigned and each commit keeps the local system time recorded automatically by Git when creating it.
+
+### Changed
+
+- Expanded the English and Chinese tag-setting prompt to explain that tags appear on GitHub's Tags page and do not change file contents.
+
+## 3.1.4 - 2026-08-31
+
+### Changed
+
+- Every file requiring a publication check now displays the exact reason: either a filename commonly used for credentials, private configuration, or key material, or a recognized private-key header.
+- Reworded the risk heading and guidance so users can understand and review each item instead of receiving an unexplained “sensitive-looking” warning.
+
+## 3.1.3 - 2026-08-31
+
+### Fixed
+
+- Fixed historical-import private-key detection reporting its own source code because the scanner contained the broad pattern it searched for.
+- Private-key content checks now recognize complete key-file headers at the start of a file. Source code and documentation that merely mention a header are ignored, while real OpenSSH, PEM, PGP, and PuTTY keys remain covered; `.ppk` filenames are also recognized.
+
+## 3.1.2 - 2026-08-31
+
+### Changed
+
+- Chinese yes-or-no prompts now show the accepted shortcut letters explicitly as `[是(y)/否(n)，默认是]` or `[是(y)/否(n)，默认否]`.
+
 ## 3.1.1 - 2026-08-31
 
 ### Added

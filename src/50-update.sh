@@ -19,17 +19,6 @@ UPDATE_INSTALL_ALIAS=false
 update_select_current_account() {
   local saved_username=""
   local index=""
-  local choice=""
-  local page=0
-  local page_count=""
-
-  saved_username="$(git -C "$GIT_ROOT" config --local --get github-auto.username 2>/dev/null || true)"
-  if [ -n "$saved_username" ] && index="$(account_index "$saved_username")"; then
-    UPDATE_ACCOUNT_USERNAME="${ACCOUNT_USERNAMES[$index]}"
-    UPDATE_OLD_USERNAME="${ACCOUNT_USERNAMES[$index]}"
-    UPDATE_OLD_EMAIL="${ACCOUNT_EMAILS[$index]}"
-    return 0
-  fi
 
   if index="$(account_index "$CURRENT_REPOSITORY_OWNER")"; then
     UPDATE_ACCOUNT_USERNAME="${ACCOUNT_USERNAMES[$index]}"
@@ -38,54 +27,17 @@ update_select_current_account() {
     return 0
   fi
 
-  if [ "$ACCOUNT_COUNT" -eq 1 ]; then
-    UPDATE_ACCOUNT_USERNAME="${ACCOUNT_USERNAMES[0]}"
-    UPDATE_OLD_USERNAME="${ACCOUNT_USERNAMES[0]}"
-    UPDATE_OLD_EMAIL="${ACCOUNT_EMAILS[0]}"
-    return 0
+  saved_username="$(git -C "$GIT_ROOT" config --local --get github-auto.username 2>/dev/null || true)"
+  advanced_error \
+    "This repository belongs to $CURRENT_REPOSITORY_OWNER, but that account is not saved in private/config.txt. Run ./$SCRIPT_NAME first so the repository can be bound to its owner before using update." \
+    "当前仓库属于 ${CURRENT_REPOSITORY_OWNER}，但 private/config.txt 中没有保存这个账号。请先运行 ./${SCRIPT_NAME}，把仓库重新绑定到所属账号后，再使用 update。"
+  if [ -n "$saved_username" ] &&
+     [ "$(lowercase "$saved_username")" != "$(lowercase "$CURRENT_REPOSITORY_OWNER")" ]; then
+    advanced_muted \
+      "The repository-local account $saved_username was ignored because it does not match the owner." \
+      "当前仓库本地保存的账号 ${saved_username} 与仓库所属账号不一致，因此没有采用。"
   fi
-
-  if [ "$ACCOUNT_COUNT" -eq 0 ]; then
-    advanced_error \
-      "No GitHub account is configured in private/config.txt. Run ./$SCRIPT_NAME new first." \
-      "private/config.txt 中还没有 GitHub 账号。请先运行 ./$SCRIPT_NAME new。"
-    return 1
-  fi
-
-  advanced_heading \
-    "Which account does this project use?" \
-    "这个项目原来使用哪个 GitHub 账号？"
-  page_count="$(paged_choice_page_count "$ACCOUNT_COUNT")"
-  print_account_menu_options "$page" no "$ADVANCED_LANGUAGE" || return 1
-
-  while true; do
-    choice="$(advanced_prompt_value "Choose" "选择" "1")" || return 1
-    choice="$(lowercase "$choice")"
-    if [ "$choice" = "0" ]; then
-      advanced_info "Update canceled." "已取消同步改名。"
-      return 2
-    fi
-    if [ "$choice" = "x" ] && [ "$page" -gt 0 ]; then
-      page=$((page - 1))
-      printf '\n'
-      print_account_menu_options "$page" no "$ADVANCED_LANGUAGE" || return 1
-      continue
-    fi
-    if [ "$choice" = "y" ] && [ "$page" -lt $((page_count - 1)) ]; then
-      page=$((page + 1))
-      printf '\n'
-      print_account_menu_options "$page" no "$ADVANCED_LANGUAGE" || return 1
-      continue
-    fi
-    if paged_choice_to_index "$choice" "$page" "$ACCOUNT_COUNT"; then
-      index="$PAGED_CHOICE_INDEX"
-      UPDATE_ACCOUNT_USERNAME="${ACCOUNT_USERNAMES[$index]}"
-      UPDATE_OLD_USERNAME="${ACCOUNT_USERNAMES[$index]}"
-      UPDATE_OLD_EMAIL="${ACCOUNT_EMAILS[$index]}"
-      return 0
-    fi
-    advanced_warn "Enter one of the choices shown." "请输入当前页面中显示的选项。"
-  done
+  return 1
 }
 
 update_prompt_username() {
@@ -175,6 +127,9 @@ update_parse_repository_target() {
   fi
 
   if parse_repository_input "$value"; then
+    if [ "$(lowercase "$REPOSITORY_OWNER")" != "$(lowercase "$default_owner")" ]; then
+      return 1
+    fi
     UPDATE_NEW_OWNER="$REPOSITORY_OWNER"
     UPDATE_NEW_REPOSITORY="$REPOSITORY_NAME"
     return 0
@@ -187,16 +142,16 @@ update_prompt_repository() {
   local value=""
 
   advanced_muted \
-    "Enter only the new repository name, or paste any common GitHub repository address." \
-    "只填写新的仓库名即可，也可以直接粘贴常见格式的 GitHub 仓库地址。"
+    "Enter only the new repository name, or paste a GitHub address under account $default_owner." \
+    "只填写新的仓库名即可，也可以粘贴账号 ${default_owner} 名下的 GitHub 仓库地址。"
   while true; do
     value="$(advanced_prompt_value "New repository name or address" "新的仓库名或地址" "$UPDATE_OLD_REPOSITORY")" || return 1
     if update_parse_repository_target "$value" "$default_owner"; then
       return 0
     fi
     advanced_warn \
-      "That repository name or GitHub address was not recognized." \
-      "没有识别出有效的仓库名或 GitHub 地址，请检查后重新输入。"
+      "That repository was not recognized under account $default_owner. This workflow does not mix one account with another account's repository." \
+      "没有识别出账号 ${default_owner} 名下的有效仓库。这个流程不会让一个账号读写另一个账号名下的仓库。"
   done
 }
 
@@ -387,14 +342,20 @@ update_verify_repository() {
   local output=""
   local detail=""
 
+  if [ "$(lowercase "$UPDATE_NEW_USERNAME")" != "$(lowercase "$UPDATE_NEW_OWNER")" ]; then
+    advanced_error \
+      "Stopped because account $UPDATE_NEW_USERNAME does not match repository owner $UPDATE_NEW_OWNER." \
+      "操作已停止：账号 ${UPDATE_NEW_USERNAME} 与仓库所属账号 ${UPDATE_NEW_OWNER} 不一致。"
+    return 1
+  fi
   while true; do
     advanced_info \
       "Reading ${UPDATE_NEW_OWNER}/${UPDATE_NEW_REPOSITORY} with account $UPDATE_NEW_USERNAME; this check does not change the repository." \
       "正在用账号 $UPDATE_NEW_USERNAME 读取 ${UPDATE_NEW_OWNER}/${UPDATE_NEW_REPOSITORY} 的远端信息；这一步不会修改仓库。"
     output="$(run_git_with_identity "$UPDATE_IDENTITY_FILE" ls-remote "$remote_url" HEAD 2>&1)" && {
       advanced_success \
-        "GitHub allowed account $UPDATE_NEW_USERNAME to read ${UPDATE_NEW_OWNER}/${UPDATE_NEW_REPOSITORY}." \
-        "GitHub 已允许账号 $UPDATE_NEW_USERNAME 读取 ${UPDATE_NEW_OWNER}/${UPDATE_NEW_REPOSITORY}。"
+        "The repository responded to the SSH key verified for account $UPDATE_NEW_USERNAME. No local or remote setting has been changed yet." \
+        "仓库已响应账号 ${UPDATE_NEW_USERNAME} 的已验证 SSH 密钥；此时尚未修改任何本机或远端设置。"
       return 0
     }
 
@@ -535,12 +496,12 @@ run_update_command() {
   advanced_heading "What changed?" "需要同步哪项改名？"
   if [ "$ADVANCED_LANGUAGE" = "en" ]; then
     printf '  1) GitHub username\n'
-    printf '  2) Repository name or location\n'
+    printf '  2) Repository name\n'
     printf '  3) Both username and repository\n'
     printf '  0) Cancel\n'
   else
     printf '  1) GitHub 用户名\n'
-    printf '  2) 仓库名称或所在账号\n'
+    printf '  2) 仓库名称\n'
     printf '  3) 用户名和仓库都变了\n'
     printf '  0) 取消\n'
   fi
@@ -576,11 +537,7 @@ run_update_command() {
     UPDATE_NEW_EMAIL="$(update_prompt_email "$UPDATE_NEW_USERNAME")" || return 1
   fi
 
-  default_owner="$UPDATE_OLD_OWNER"
-  if [ "$username_changed" = "yes" ] &&
-     [ "$(lowercase "$UPDATE_OLD_OWNER")" = "$(lowercase "$UPDATE_OLD_USERNAME")" ]; then
-    default_owner="$UPDATE_NEW_USERNAME"
-  fi
+  default_owner="$UPDATE_NEW_USERNAME"
   UPDATE_NEW_OWNER="$default_owner"
   UPDATE_NEW_REPOSITORY="$UPDATE_OLD_REPOSITORY"
   if [ "$repository_changed" = "yes" ]; then
@@ -659,4 +616,3 @@ run_update_command() {
       "原来的 SSH 主机配置已保留，避免影响仍在引用它的其他本地项目。"
   fi
 }
-

@@ -154,6 +154,24 @@ read_saved_theme() {
   esac
 }
 
+read_saved_history_tags() {
+  local line=""
+  local value=""
+
+  line="$(grep -m 1 -F "$HISTORY_TAGS_FIELD_PREFIX" "$PRIVATE_CONFIG_FILE" 2>/dev/null || true)"
+  value="$(trim "${line#"$HISTORY_TAGS_FIELD_PREFIX"}")"
+  value="$(lowercase "$value")"
+
+  case "$value" in
+    enabled|true|yes|on)
+      printf 'true'
+      ;;
+    *)
+      printf 'false'
+      ;;
+  esac
+}
+
 detect_automatic_theme() {
   local background=""
   local style=""
@@ -202,12 +220,12 @@ apply_theme() {
 
   case "$THEME" in
     dark)
-      COLOR_HEADING='\033[1;97m'
-      COLOR_INFO='\033[1;96m'
-      COLOR_SUCCESS='\033[1;92m'
-      COLOR_WARNING='\033[1;93m'
-      COLOR_ERROR='\033[1;91m'
-      COLOR_MUTED='\033[0;37m'
+      COLOR_HEADING='\033[38;5;255m'
+      COLOR_INFO='\033[38;5;116m'
+      COLOR_SUCCESS='\033[38;5;114m'
+      COLOR_WARNING='\033[38;5;222m'
+      COLOR_ERROR='\033[38;5;217m'
+      COLOR_MUTED='\033[38;5;250m'
       ;;
     light)
       COLOR_HEADING='\033[1;30m'
@@ -498,9 +516,9 @@ prompt_yes_no() {
 
   if [ "$UI_LANGUAGE" = "zh" ]; then
     if [ "$default_answer" = "no" ]; then
-      hint="[是/否，默认否]"
+      hint="[是(y)/否(n)，默认否]"
     else
-      hint="[是/否，默认是]"
+      hint="[是(y)/否(n)，默认是]"
     fi
   elif [ "$default_answer" = "no" ]; then
     hint="[y/N]"
@@ -680,7 +698,7 @@ load_accounts() {
       \#*)
         continue
         ;;
-      "$LANGUAGE_FIELD_PREFIX"*|"$THEME_FIELD_PREFIX"*)
+      "$LANGUAGE_FIELD_PREFIX"*|"$THEME_FIELD_PREFIX"*|"$HISTORY_TAGS_FIELD_PREFIX"*)
         continue
         ;;
     esac
@@ -757,6 +775,7 @@ add_or_update_account() {
 save_private_config() {
   local language_value="${1:-$(read_saved_language)}"
   local theme_value="${2:-$(read_saved_theme)}"
+  local history_tags_value="${3:-$(read_saved_history_tags)}"
   local temporary_file=""
   local index=0
 
@@ -767,6 +786,9 @@ save_private_config() {
     printf '# Auto Script for GitHub Setup and Push - private configuration\n'
     printf 'language: %s\n' "$language_value"
     printf 'display-theme: %s\n' "$theme_value"
+    if [ "$history_tags_value" = true ]; then
+      printf 'add-tags-to-historical-release: enabled\n'
+    fi
     printf '\n'
     printf '# GitHub accounts: one field per line, with a blank line between accounts.\n'
     while [ "$index" -lt "$ACCOUNT_COUNT" ]; do
@@ -788,6 +810,12 @@ save_private_config() {
     return 1
   fi
   return 0
+}
+
+save_history_tags_preference() {
+  local enabled="$1"
+
+  save_private_config "$(read_saved_language)" "$(read_saved_theme)" "$enabled"
 }
 
 write_accounts_to_private_config() {
@@ -1038,4 +1066,3 @@ select_account() {
 }
 
 load_accounts
-

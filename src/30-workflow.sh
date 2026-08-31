@@ -255,6 +255,14 @@ select_verified_origin_account() {
     identify_origin_ssh_account || return 1
   fi
 
+  if [ -n "${CURRENT_REPOSITORY_OWNER:-}" ] &&
+     [ "$(lowercase "$ORIGIN_VERIFIED_USERNAME")" != "$(lowercase "$CURRENT_REPOSITORY_OWNER")" ]; then
+    warn \
+      "The origin key authenticates as $ORIGIN_VERIFIED_USERNAME, but this repository belongs to $CURRENT_REPOSITORY_OWNER. The origin account will not be selected." \
+      "origin 使用的密钥登录账号是 ${ORIGIN_VERIFIED_USERNAME}，但当前仓库属于 ${CURRENT_REPOSITORY_OWNER}。脚本不会选择这个 origin 账号。"
+    return 1
+  fi
+
   if index="$(account_index "$ORIGIN_VERIFIED_USERNAME")"; then
     BOUND_USERNAME="${ACCOUNT_USERNAMES[$index]}"
     BOUND_EMAIL="${ACCOUNT_EMAILS[$index]}"
@@ -288,28 +296,21 @@ select_account_for_repository() {
   local preferred_username="${2:-}"
   local saved_username=""
   local index=""
-
-  if [ -n "$preferred_username" ] && index="$(account_index "$preferred_username")"; then
-    BOUND_USERNAME="${ACCOUNT_USERNAMES[$index]}"
-    BOUND_EMAIL="${ACCOUNT_EMAILS[$index]}"
-    info \
-      "Using the account selected for this command: $BOUND_USERNAME" \
-      "本次操作使用指定账号：$BOUND_USERNAME"
-    return 0
-  fi
+  local email=""
 
   saved_username="$(git -C "$GIT_ROOT" config --local --get github-auto.username 2>/dev/null || true)"
-  if [ -n "$saved_username" ] && index="$(account_index "$saved_username")"; then
-    BOUND_USERNAME="${ACCOUNT_USERNAMES[$index]}"
-    BOUND_EMAIL="${ACCOUNT_EMAILS[$index]}"
-    info \
-      "Using this repository's saved GitHub account: $BOUND_USERNAME" \
-      "使用当前仓库已经保存的 GitHub 账号：$BOUND_USERNAME"
-    return 0
+  if [ -n "$saved_username" ] &&
+     [ "$(lowercase "$saved_username")" != "$(lowercase "$owner")" ]; then
+    warn \
+      "This repository was previously saved with account $saved_username, but its GitHub owner is $owner. The mismatched binding will not be used." \
+      "当前仓库以前保存的账号是 ${saved_username}，但 GitHub 仓库属于 ${owner}。脚本不会继续使用这个不匹配的账号。"
   fi
 
-  if select_verified_origin_account yes; then
-    return 0
+  if [ -n "$preferred_username" ] &&
+     [ "$(lowercase "$preferred_username")" != "$(lowercase "$owner")" ]; then
+    warn \
+      "Account $preferred_username was supplied by an earlier setup step, but this repository belongs to $owner. Only account $owner can be used for this repository." \
+      "前面的设置步骤提供了账号 ${preferred_username}，但当前仓库属于 ${owner}。这个仓库只能使用账号 ${owner}。"
   fi
 
   if index="$(account_index "$owner")"; then
@@ -321,11 +322,35 @@ select_account_for_repository() {
     return 0
   fi
 
-  select_account \
-    "Which GitHub account should this project use?" \
-    "这个项目使用哪个 GitHub 账号？" || return $?
+  heading \
+    "Set up the account that owns this repository" \
+    "配置当前仓库所属的 GitHub 账号"
+  muted \
+    "The destination is $owner/${CURRENT_REPOSITORY_NAME}. To prevent accounts from being mixed, this repository must use GitHub account $owner." \
+    "目标仓库是 ${owner}/${CURRENT_REPOSITORY_NAME}。为避免多个账号相互串用，当前仓库必须使用 GitHub 账号 ${owner}。"
+  muted \
+    "Only the commit email is needed. The script will reuse or create an SSH key only after GitHub confirms that it belongs to exactly $owner." \
+    "现在只需确认提交邮箱。只有 GitHub 确认密钥确实属于 ${owner} 后，脚本才会沿用现有密钥或创建新密钥。"
+  email="$(prompt_account_email "$owner")" || return 1
+  setup_or_reuse_account "$owner" "$email" || return 1
   BOUND_USERNAME="$SELECTED_USERNAME"
   BOUND_EMAIL="$SELECTED_EMAIL"
+}
+
+repository_account_matches_owner() {
+  [ -n "${BOUND_USERNAME:-}" ] &&
+    [ -n "${CURRENT_REPOSITORY_OWNER:-}" ] &&
+    [ "$(lowercase "$BOUND_USERNAME")" = "$(lowercase "$CURRENT_REPOSITORY_OWNER")" ]
+}
+
+require_repository_account_match() {
+  if repository_account_matches_owner; then
+    return 0
+  fi
+  error_message \
+    "Stopped because account ${BOUND_USERNAME:-<none>} does not match repository owner ${CURRENT_REPOSITORY_OWNER:-<unknown>}. No remote operation was attempted." \
+    "操作已停止：当前账号 ${BOUND_USERNAME:-<未选择>} 与仓库所属账号 ${CURRENT_REPOSITORY_OWNER:-<无法识别>} 不一致。脚本没有执行任何远端操作。"
+  return 1
 }
 
 ensure_bound_identity() {
@@ -474,6 +499,7 @@ ensure_bound_identity() {
 save_project_binding() {
   local remote_url=""
 
+  require_repository_account_match || return 1
   remote_url="git@${BOUND_SSH_ALIAS}:${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME}.git"
 
   git -C "$GIT_ROOT" config --local user.name "$BOUND_USERNAME" || return 1
@@ -532,20 +558,21 @@ verify_repository_access() {
   local output=""
   local detail=""
 
+  require_repository_account_match || return 1
   while true; do
     info \
-      "Reading ${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME} with account $BOUND_USERNAME; this check does not upload or change the repository." \
-      "正在用账号 $BOUND_USERNAME 读取 ${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME} 的远端信息；这一步不会上传或修改仓库。"
+      "Checking ${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME} with the SSH key verified for its owner, $BOUND_USERNAME. This does not upload or change the repository." \
+      "正在使用已确认为仓库所属账号 ${BOUND_USERNAME} 的 SSH 密钥，检查 ${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME}；这一步不会上传或修改仓库。"
     output="$(run_git_with_identity "$BOUND_IDENTITY_FILE" ls-remote "$target" HEAD 2>&1)" && {
       success \
-        "GitHub allowed account $BOUND_USERNAME to read ${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME}." \
-        "GitHub 已允许账号 $BOUND_USERNAME 读取 ${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME}。"
+        "The repository responded to the SSH key verified for account $BOUND_USERNAME. Upload permission will be confirmed when git push runs." \
+        "仓库已响应账号 ${BOUND_USERNAME} 的已验证 SSH 密钥。实际上传权限将在执行 git push 时得到最终确认。"
       return 0
     }
 
     error_message \
-      "GitHub did not allow account $BOUND_USERNAME to read ${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME}." \
-      "GitHub 未允许账号 $BOUND_USERNAME 读取 ${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME}。"
+      "Could not read remote information for ${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME} with account $BOUND_USERNAME." \
+      "无法使用账号 ${BOUND_USERNAME} 读取 ${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME} 的远端信息。"
     detail="${output##*$'\n'}"
     if [ -n "$detail" ]; then
       muted "Git result: $detail" "Git 返回信息：$detail"
@@ -691,9 +718,7 @@ prepare_and_commit() {
     return 0
   fi
 
-  if [ "$has_commits" = false ]; then
-    proposed="$INITIAL_COMMIT_MESSAGE"
-  elif resolve_release_version; then
+  if resolve_release_version; then
     proposed="${RELEASE_PREFIX}${RELEASE_VERSION}"
     info \
       "Detected version ${RELEASE_VERSION} (${VERSION_SOURCE})" \
@@ -710,6 +735,11 @@ prepare_and_commit() {
           "这个 CHANGELOG 中只识别到一个版本。"
         ;;
     esac
+  elif [ "$has_commits" = false ]; then
+    proposed="$INITIAL_COMMIT_MESSAGE"
+    muted \
+      "No release version was found, so the first commit message will be used." \
+      "没有发现版本号，将使用首次提交说明。"
   else
     muted \
       "No release version was found, so a general commit message will be used." \
@@ -766,6 +796,7 @@ prepare_and_commit() {
 push_current_branch() {
   local branch=""
 
+  require_repository_account_match || return 1
   branch="$(git -C "$GIT_ROOT" branch --show-current)"
   if [ -z "$branch" ]; then
     fail \
@@ -814,25 +845,6 @@ run_project_flow() {
   describe_and_validate_project_state || return 1
   ensure_script_excluded
 
-  if [ "$ACCOUNT_COUNT" -eq 0 ]; then
-    heading "GitHub account required" "需要选择 GitHub 账号"
-    if [ "$PROJECT_GIT_STATE" = "existing" ]; then
-      muted \
-        "The local Git repository was already initialized and its existing history will be preserved, but private/config.txt has no saved GitHub account. The next step configures an account; it does not run git init again." \
-        "当前文件夹原本就是 Git 仓库，现有提交历史会完整保留；只是 private/config.txt 中还没有保存 GitHub 账号。接下来只配置账号，不会再次执行 git init。"
-    else
-      muted \
-        "The empty local Git metadata was just initialized. private/config.txt has no saved GitHub account, so the next step configures one before any commit or push." \
-        "本地 Git 元数据刚刚完成初始化。由于 private/config.txt 中还没有保存 GitHub 账号，接下来会先配置账号，再进入提交和上传步骤。"
-    fi
-    if read_origin_repository && select_verified_origin_account yes; then
-      preferred_username="$BOUND_USERNAME"
-    else
-      run_account_setup || return 1
-      preferred_username="$SELECTED_USERNAME"
-    fi
-  fi
-
   configure_project "$preferred_username" || account_status=$?
   if [ "$account_status" -eq 2 ]; then
     return 0
@@ -849,4 +861,3 @@ run_project_flow() {
   fi
   push_current_branch
 }
-

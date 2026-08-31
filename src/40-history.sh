@@ -15,6 +15,7 @@ HISTORY_CONFLICT_COUNT=0
 HISTORY_SKIPPED_DIRECTORIES=()
 HISTORY_SKIPPED_COUNT=0
 HISTORY_SENSITIVE_FILES=()
+HISTORY_SENSITIVE_REASONS=()
 HISTORY_SENSITIVE_COUNT=0
 HISTORY_LARGE_FILES=()
 HISTORY_LARGE_COUNT=0
@@ -22,7 +23,8 @@ HISTORY_MAX_FILE_BYTES=104857600
 HISTORY_GITIGNORE_CONTENT=""
 HISTORY_ADD_GITIGNORE=false
 HISTORY_WORK_DIRECTORY=""
-HISTORY_CREATE_TAGS=true
+HISTORY_CREATE_TAGS=false
+HISTORY_REBUILD_DATES=true
 
 advanced_heading() {
   if [ "$ADVANCED_LANGUAGE" = "en" ]; then
@@ -84,23 +86,37 @@ advanced_prompt_yes_no() {
   local english_label="$1"
   local chinese_label="$2"
   local default_answer="${3:-yes}"
+  local english_detail="${4:-}"
+  local chinese_detail="${5:-}"
   local label="$english_label"
+  local detail="$english_detail"
   local hint="[Y/n]"
   local answer=""
 
   if [ "$ADVANCED_LANGUAGE" != "en" ]; then
     label="$chinese_label"
+    detail="$chinese_detail"
     if [ "$default_answer" = "no" ]; then
-      hint="[是/否，默认否]"
+      hint="[是(y)/否(n)，默认否]"
     else
-      hint="[是/否，默认是]"
+      hint="[是(y)/否(n)，默认是]"
     fi
   elif [ "$default_answer" = "no" ]; then
     hint="[y/N]"
   fi
 
+  if [ -n "$detail" ]; then
+    print_colored "$COLOR_INFO" "$label"
+    print_colored "$COLOR_MUTED" "$detail"
+    label=""
+  fi
+
   while true; do
-    printf '%b%s %s: %b' "$COLOR_INFO" "$label" "$hint" "$COLOR_RESET"
+    if [ -n "$label" ]; then
+      printf '%b%s %s: %b' "$COLOR_INFO" "$label" "$hint" "$COLOR_RESET"
+    else
+      printf '%b%s: %b' "$COLOR_INFO" "$hint" "$COLOR_RESET"
+    fi
     IFS= read -r answer || return 1
     answer="$(lowercase "$(trim "$answer")")"
 
@@ -528,10 +544,43 @@ history_sensitive_name() {
     .env.example|.env.sample|.env.template|.env.defaults)
       return 1
       ;;
-    .env|.env.*|.netrc|.npmrc|.pypirc|.git-credentials|credentials|credentials.json|id_rsa|id_dsa|id_ecdsa|id_ed25519|*.pem|*.p12|*.pfx|*.key|*.kdbx)
+    .env|.env.*|.netrc|.npmrc|.pypirc|.git-credentials|credentials|credentials.json|id_rsa|id_dsa|id_ecdsa|id_ed25519|*.pem|*.p12|*.pfx|*.key|*.kdbx|*.ppk)
       return 0
       ;;
   esac
+  return 1
+}
+
+history_contains_private_key_header() {
+  local file="$1"
+  local first_content_line=""
+
+  [ -f "$file" ] || return 1
+
+  while IFS= read -r first_content_line || [ -n "$first_content_line" ]; do
+    first_content_line="${first_content_line%$'\r'}"
+    [ -n "$first_content_line" ] || continue
+
+    case "$first_content_line" in
+      '-----BEGIN PRIVATE KEY-----'|\
+      '-----BEGIN ENCRYPTED PRIVATE KEY-----'|\
+      '-----BEGIN OPENSSH PRIVATE KEY-----'|\
+      '-----BEGIN RSA PRIVATE KEY-----'|\
+      '-----BEGIN DSA PRIVATE KEY-----'|\
+      '-----BEGIN EC PRIVATE KEY-----'|\
+      '-----BEGIN SSH2 PRIVATE KEY-----'|\
+      '-----BEGIN SSH2 ENCRYPTED PRIVATE KEY-----'|\
+      '-----BEGIN PGP PRIVATE KEY BLOCK-----'|\
+      PuTTY-User-Key-File-2:*|\
+      PuTTY-User-Key-File-3:*)
+        return 0
+        ;;
+      *)
+        return 1
+        ;;
+    esac
+  done < "$file"
+
   return 1
 }
 
@@ -542,8 +591,10 @@ history_scan_risks() {
   local file=""
   local relative=""
   local size=0
+  local sensitive_reason=""
 
   HISTORY_SENSITIVE_FILES=()
+  HISTORY_SENSITIVE_REASONS=()
   HISTORY_SENSITIVE_COUNT=0
   HISTORY_LARGE_FILES=()
   HISTORY_LARGE_COUNT=0
@@ -559,9 +610,15 @@ history_scan_risks() {
         HISTORY_LARGE_FILES[$HISTORY_LARGE_COUNT]="$version: $relative ($size bytes)"
         HISTORY_LARGE_COUNT=$((HISTORY_LARGE_COUNT + 1))
       fi
-      if history_sensitive_name "$(basename "$file")" ||
-         LC_ALL=C grep -Iq -m 1 -- '-----BEGIN .*PRIVATE KEY-----' "$file" 2>/dev/null; then
+      sensitive_reason=""
+      if history_sensitive_name "$(basename "$file")"; then
+        sensitive_reason="sensitive-name"
+      elif history_contains_private_key_header "$file"; then
+        sensitive_reason="private-key-header"
+      fi
+      if [ -n "$sensitive_reason" ]; then
         HISTORY_SENSITIVE_FILES[$HISTORY_SENSITIVE_COUNT]="$version: $relative"
+        HISTORY_SENSITIVE_REASONS[$HISTORY_SENSITIVE_COUNT]="$sensitive_reason"
         HISTORY_SENSITIVE_COUNT=$((HISTORY_SENSITIVE_COUNT + 1))
       fi
     done < <(
@@ -835,6 +892,7 @@ history_show_paginated_list() {
   local index=0
   local label=""
   local item=""
+  local reason=""
   local navigation_status=0
 
   if [ "$kind" = "large" ]; then
@@ -862,6 +920,20 @@ history_show_paginated_list() {
           ;;
         sensitive)
           item="${HISTORY_SENSITIVE_FILES[$index]}"
+          reason="${HISTORY_SENSITIVE_REASONS[$index]:-sensitive-name}"
+          if [ "$ADVANCED_LANGUAGE" = "en" ]; then
+            if [ "$reason" = "private-key-header" ]; then
+              item="$item — Reason: the file begins with a recognized private-key header."
+            else
+              item="$item — Reason: this filename commonly stores credentials, private configuration, or key material."
+            fi
+          else
+            if [ "$reason" = "private-key-header" ]; then
+              item="$item —— 原因：文件开头符合常见私钥格式。"
+            else
+              item="$item —— 原因：这个文件名通常用于保存凭据、私人配置或密钥材料。"
+            fi
+          fi
           ;;
         skipped)
           item="${HISTORY_SKIPPED_DIRECTORIES[$index]}"
@@ -901,11 +973,11 @@ history_review_risks() {
   fi
 
   if [ "$HISTORY_SENSITIVE_COUNT" -gt 0 ]; then
-    advanced_heading "Sensitive-looking files found" "发现可能不适合公开的文件"
+    advanced_heading "Files that need a publication check" "发现需要确认是否可以公开的文件"
     history_show_paginated_list sensitive || return 1
     advanced_muted \
-      "Complete snapshots include these files. Confirm only after checking that they are safe to publish." \
-      "完整快照会原样包含这些文件。请逐项确认它们可以上传到 GitHub。"
+      "Each item shows why it was flagged. Complete snapshots include these files, so confirm only after checking that they are safe to publish." \
+      "每一项后面都说明了触发检查的原因。完整快照会原样包含这些文件，请逐项确认它们可以上传到 GitHub。"
     if ! advanced_prompt_yes_no \
       "Include these files and continue?" \
       "已经检查完毕，仍然包含这些文件并继续吗？" \
@@ -985,61 +1057,34 @@ advanced_add_account() {
 advanced_select_account_for_history() {
   local owner="$1"
   local index=""
-  local answer=""
-  local add_choice=""
-  local page=0
-  local page_count=""
-
-  if [ "$ACCOUNT_COUNT" -eq 0 ]; then
-    advanced_info \
-      "No GitHub account is configured yet. The next two answers are the only account details needed." \
-      "还没有可用的 GitHub 账号配置。你只需填写用户名和提交邮箱，其余连接设置由脚本完成。"
-    advanced_add_account || return 1
-    return 0
-  fi
+  local email=""
 
   if index="$(account_index "$owner" 2>/dev/null)"; then
     BOUND_USERNAME="${ACCOUNT_USERNAMES[$index]}"
     BOUND_EMAIL="${ACCOUNT_EMAILS[$index]}"
-  elif [ "$ACCOUNT_COUNT" -eq 1 ]; then
-    BOUND_USERNAME="${ACCOUNT_USERNAMES[0]}"
-    BOUND_EMAIL="${ACCOUNT_EMAILS[0]}"
   else
-    advanced_heading "Choose the GitHub account" "选择此次上传使用的 GitHub 账号"
-    page_count="$(paged_choice_page_count "$ACCOUNT_COUNT")"
-    add_choice="$(account_add_choice)"
-    print_account_menu_options "$page" yes "$ADVANCED_LANGUAGE" || return 1
+    advanced_info \
+      "The destination repository belongs to $owner, but that account is not saved yet. To prevent accounts from being mixed, only account $owner can be used." \
+      "目标仓库属于 ${owner}，但这个账号尚未保存。为避免多个账号相互串用，这里只能使用账号 ${owner}。"
+    email="$(default_email_for_username "$owner")"
     while true; do
-      answer="$(advanced_prompt_value "Choose" "选择" "1")" || return 1
-      answer="$(lowercase "$answer")"
-      if [ "$answer" = "0" ]; then
-        advanced_info "Account selection canceled." "已取消选择账号。"
-        return 2
-      fi
-      if [ "$answer" = "x" ] && [ "$page" -gt 0 ]; then
-        page=$((page - 1))
-        printf '\n'
-        print_account_menu_options "$page" yes "$ADVANCED_LANGUAGE" || return 1
-        continue
-      fi
-      if [ "$answer" = "y" ] && [ "$page" -lt $((page_count - 1)) ]; then
-        page=$((page + 1))
-        printf '\n'
-        print_account_menu_options "$page" yes "$ADVANCED_LANGUAGE" || return 1
-        continue
-      fi
-      if [ "$answer" = "$add_choice" ]; then
-        advanced_add_account || return 1
-        return 0
-      fi
-      if paged_choice_to_index "$answer" "$page" "$ACCOUNT_COUNT"; then
-        index="$PAGED_CHOICE_INDEX"
-        BOUND_USERNAME="${ACCOUNT_USERNAMES[$index]}"
-        BOUND_EMAIL="${ACCOUNT_EMAILS[$index]}"
+      email="$(advanced_prompt_value "Commit email" "提交邮箱" "$email")" || return 1
+      if valid_email "$email"; then
         break
       fi
-      advanced_warn "Enter one of the choices shown." "请输入当前页面中显示的选项。"
+      advanced_warn "The email format was not recognized." "邮箱格式无法识别，请重新输入。"
     done
+    check_saved_account_identity "$owner" "$email" || return 1
+    add_or_update_account "$owner" "$email"
+    write_accounts_to_private_config
+    BOUND_USERNAME="$owner"
+    BOUND_EMAIL="$email"
+    BOUND_SSH_ALIAS="$FOUND_SSH_ALIAS"
+    BOUND_IDENTITY_FILE="$FOUND_IDENTITY_FILE"
+    advanced_success \
+      "Saved repository owner $owner and its commit email in private/config.txt." \
+      "已把仓库所属账号 ${owner} 及其提交邮箱保存到 private/config.txt。"
+    return 0
   fi
 
   check_saved_account_identity "$BOUND_USERNAME" "$BOUND_EMAIL" || return 1
@@ -1054,14 +1099,15 @@ advanced_verify_repository_access() {
   local output=""
   local detail=""
 
+  require_repository_account_match || return 1
   while true; do
     advanced_info \
-      "Reading ${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME} with account $BOUND_USERNAME; this check does not upload or change the repository." \
-      "正在用账号 $BOUND_USERNAME 读取 ${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME} 的远端信息；这一步不会上传或修改仓库。"
+      "Checking ${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME} with the SSH key verified for its owner, $BOUND_USERNAME. This does not upload or change the repository." \
+      "正在使用已确认为仓库所属账号 ${BOUND_USERNAME} 的 SSH 密钥，检查 ${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME}；这一步不会上传或修改仓库。"
     output="$(run_git_with_identity "$BOUND_IDENTITY_FILE" ls-remote "$target" HEAD 2>&1)" && {
       advanced_success \
-        "GitHub allowed account $BOUND_USERNAME to read ${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME}." \
-        "GitHub 已允许账号 $BOUND_USERNAME 读取 ${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME}。"
+        "The repository responded to the SSH key verified for account $BOUND_USERNAME. Upload permission will be confirmed when git push runs." \
+        "仓库已响应账号 ${BOUND_USERNAME} 的已验证 SSH 密钥。实际上传权限将在执行 git push 时得到最终确认。"
       return 0
     }
     advanced_error \
@@ -1198,6 +1244,7 @@ history_build_repository() {
   local short_commit=""
   local GIT_ROOT=""
 
+  require_repository_account_match || return 1
   work_directory="$(mktemp -d "$(history_temporary_base)/github-auto-history.XXXXXX")" || return 1
   HISTORY_WORK_DIRECTORY="$work_directory"
   GIT_ROOT="$work_directory"
@@ -1233,8 +1280,8 @@ history_build_repository() {
     fi
 
     git -C "$work_directory" add -A -f || return 1
-    if [ -n "$release_date" ]; then
-      commit_date="${release_date}T12:00:00 +0000"
+    commit_date="$(history_commit_date_for_release "$release_date")"
+    if [ -n "$commit_date" ]; then
       if ! GIT_AUTHOR_DATE="$commit_date" GIT_COMMITTER_DATE="$commit_date" \
         git -C "$work_directory" commit --allow-empty -q -m "Release $version"; then
         return 1
@@ -1253,6 +1300,14 @@ history_build_repository() {
     index=$((index + 1))
   done
   return 0
+}
+
+history_commit_date_for_release() {
+  local release_date="$1"
+
+  if [ "$HISTORY_REBUILD_DATES" = true ] && [ -n "$release_date" ]; then
+    printf '%sT12:00:00 +0000' "$release_date"
+  fi
 }
 
 HISTORY_REMOTE_MAIN_OID=""
@@ -1408,6 +1463,7 @@ history_publish_repository() {
   local GIT_ROOT="$HISTORY_WORK_DIRECTORY"
   local push_status=0
 
+  require_repository_account_match || return 1
   advanced_info "Reading the latest remote state..." "正在确认远端仓库是否发生变化……"
   history_read_remote_main || return 1
   history_collect_remote_tag_state || return 1
@@ -1445,7 +1501,8 @@ run_historical_release_import() {
 
   reset_history_releases
   HISTORY_WORK_DIRECTORY=""
-  HISTORY_CREATE_TAGS=true
+  HISTORY_CREATE_TAGS="$(read_saved_history_tags)"
+  HISTORY_REBUILD_DATES=true
 
   advanced_heading "Rebuild Git history from historical releases" "用历史版本文件夹重建 Git 历史"
   advanced_muted \
@@ -1507,12 +1564,16 @@ run_historical_release_import() {
   history_offer_missing_gitignore
   history_review_risks || return 1
   if advanced_prompt_yes_no \
-    "Create a vX.Y.Z tag for every release commit?" \
-    "为每个版本创建对应的 vX.Y.Z 标签吗？" \
-    "yes"; then
-    HISTORY_CREATE_TAGS=true
+    "Use detected release dates for the reconstructed commit timestamps?" \
+    "是否使用识别到的发布日期重建提交时间？" \
+    "yes" \
+    "Choose Yes: Assign each reliable detected release date to its matching commit.
+Choose No: Do not assign historical dates; each commit keeps the local system time that Git records automatically when creating it." \
+    "选择“是”：把识别到的可靠发布日期写入对应提交。
+选择“否”：不写入历史日期；每个提交保留 Git 创建它时自动记录的本机时间。"; then
+    HISTORY_REBUILD_DATES=true
   else
-    HISTORY_CREATE_TAGS=false
+    HISTORY_REBUILD_DATES=false
   fi
 
   advanced_prepare_history_destination || destination_status=$?
@@ -1535,6 +1596,24 @@ run_historical_release_import() {
     "$BOUND_EMAIL" \
     "$BOUND_IDENTITY_FILE" \
     "$HISTORY_REMOTE_URL"
+  if [ "$HISTORY_REBUILD_DATES" = true ]; then
+    advanced_muted \
+      "Commit dates: each reliable detected release date is assigned; for a release without one, Git records the local system time at the moment that reconstructed commit is created." \
+      "提交时间：有可靠发布日期的版本使用该日期；其余版本保留 Git 创建提交时自动记录的本机时间。"
+  else
+    advanced_muted \
+      "Commit dates: no historical dates are assigned; Git records the local system time at the moment each reconstructed commit is created." \
+      "提交时间：不写入历史日期；每个提交保留 Git 创建它时自动记录的本机时间。"
+  fi
+  if [ "$HISTORY_CREATE_TAGS" = true ]; then
+    advanced_muted \
+      "Version tags: create a matching vX.Y.Z tag for every release." \
+      "版本标记：为每个版本创建对应的 vX.Y.Z 标签。"
+  else
+    advanced_muted \
+      "Version tags: disabled in Advanced features." \
+      "版本标记：高级功能中当前未开启。"
+  fi
   if ! advanced_prompt_yes_no \
     "Build the temporary repository now without uploading it?" \
     "现在只创建临时仓库、暂不上传吗？" \
@@ -1554,9 +1633,15 @@ run_historical_release_import() {
 
   advanced_heading "Rebuilt history" "历史重建完成"
   git -C "$HISTORY_WORK_DIRECTORY" log --oneline --reverse
-  advanced_muted \
-    "These are newly reconstructed commits. They preserve snapshot order and reliable release dates, not any missing original commit metadata." \
-    "这些提交由版本快照重新生成，能够还原文件变化顺序和可靠的发布日期，但无法恢复已经遗失的原始提交信息。"
+  if [ "$HISTORY_REBUILD_DATES" = true ]; then
+    advanced_muted \
+      "These newly reconstructed commits preserve snapshot order and reliable detected release dates, but cannot restore other missing original commit metadata." \
+      "这些提交由版本快照重新生成，能够还原文件变化顺序和识别到的可靠发布日期，但无法恢复其他已经遗失的原始提交信息。"
+  else
+    advanced_muted \
+      "These newly reconstructed commits preserve snapshot order. No historical dates were assigned, so Git recorded the local system time at the moment each commit was created; missing original commit metadata cannot be restored." \
+      "这些提交由版本快照重新生成，能够还原文件变化顺序。此次没有写入历史日期，每个提交保留了 Git 创建它时自动记录的本机时间；已经遗失的原始提交信息无法恢复。"
+  fi
 
   if [ "$ADVANCED_LANGUAGE" = "en" ]; then
     printf '  1) Upload this history to GitHub\n'
@@ -1607,6 +1692,36 @@ run_historical_release_import() {
   return 0
 }
 
+history_tags_setting_menu() {
+  local enabled=false
+
+  if advanced_prompt_yes_no \
+    "Create a matching vX.Y.Z tag for every rebuilt release?" \
+    "为每个版本创建对应的 vX.Y.Z 标签吗？" \
+    "no" \
+    "Version tags appear on GitHub's Tags page; they do not change file contents." \
+    "版本标记会显示在 GitHub 的 Tags 页面；不会改变文件内容。"; then
+    enabled=true
+  fi
+
+  if ! save_history_tags_preference "$enabled"; then
+    advanced_error \
+      "The historical-release tag setting could not be saved in private/config.txt." \
+      "无法把历史版本标签设置保存到 private/config.txt。"
+    return 1
+  fi
+
+  if [ "$enabled" = true ]; then
+    advanced_success \
+      "Version tags are enabled for future historical-release imports." \
+      "已开启历史版本标签；以后重建版本时会自动创建对应标签。"
+  else
+    advanced_success \
+      "Version tags are disabled. The setting was removed from private/config.txt." \
+      "已关闭历史版本标签；private/config.txt 中的对应设置已删除。"
+  fi
+}
+
 run_advanced_menu() {
   local choice=""
 
@@ -1616,9 +1731,19 @@ run_advanced_menu() {
     advanced_heading "Advanced features" "高级功能"
     if [ "$ADVANCED_LANGUAGE" = "en" ]; then
       printf '  1) Rebuild Git history from historical release folders\n'
+      if [ "$(read_saved_history_tags)" = true ]; then
+        printf '  2) Add version tags when rebuilding history: On\n'
+      else
+        printf '  2) Add version tags when rebuilding history: Off\n'
+      fi
       printf '  0) Return\n'
     else
       printf '  1) 用历史版本文件夹重建 Git 历史\n'
+      if [ "$(read_saved_history_tags)" = true ]; then
+        printf '  2) 重建历史时添加版本标记：已开启\n'
+      else
+        printf '  2) 重建历史时添加版本标记：已关闭\n'
+      fi
       printf '  0) 返回\n'
     fi
     choice="$(advanced_prompt_value "Choose" "选择" "1")" || return 1
@@ -1626,6 +1751,9 @@ run_advanced_menu() {
       1)
         run_historical_release_import || true
         advanced_pause
+        ;;
+      2)
+        history_tags_setting_menu || true
         ;;
       0)
         return 0
@@ -1636,4 +1764,3 @@ run_advanced_menu() {
     esac
   done
 }
-
