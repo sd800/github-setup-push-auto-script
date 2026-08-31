@@ -761,9 +761,18 @@ select_account() {
 
   heading "$english_prompt" "$chinese_prompt"
   list_accounts_compact
+  if [ "$UI_LANGUAGE" = "en" ]; then
+    printf '  0) Cancel\n'
+  else
+    printf '  0) 取消\n'
+  fi
 
   while true; do
     answer="$(ui_prompt_value "Enter a number" "输入序号" "1")" || return 1
+    if [ "$answer" = "0" ]; then
+      info "Account selection canceled." "已取消选择账号。"
+      return 2
+    fi
     if [[ "$answer" =~ ^[0-9]+$ ]] && [ "$answer" -ge 1 ] && [ "$answer" -le "$ACCOUNT_COUNT" ]; then
       index=$((answer - 1))
       SELECTED_USERNAME="${ACCOUNT_USERNAMES[$index]}"
@@ -2851,11 +2860,9 @@ select_account_for_repository() {
     return 0
   fi
 
-  if ! select_account \
+  select_account \
     "Which GitHub account should this project use?" \
-    "这个项目使用哪个 GitHub 账号？"; then
-    return 1
-  fi
+    "这个项目使用哪个 GitHub 账号？" || return $?
   BOUND_USERNAME="$SELECTED_USERNAME"
   BOUND_EMAIL="$SELECTED_EMAIL"
 }
@@ -3111,9 +3118,9 @@ configure_project() {
     CURRENT_ORIGIN_HOST="$REPOSITORY_INPUT_HOST"
   fi
 
-  if ! select_account_for_repository "$CURRENT_REPOSITORY_OWNER" "$preferred_username"; then
-    return 1
-  fi
+  select_account_for_repository \
+    "$CURRENT_REPOSITORY_OWNER" \
+    "$preferred_username" || return $?
   if ! ensure_bound_identity; then
     return 1
   fi
@@ -3298,6 +3305,7 @@ push_current_branch() {
 
 run_project_flow() {
   local preferred_username="${1:-}"
+  local account_status=0
   local commit_status=0
 
   require_interactive
@@ -3325,7 +3333,12 @@ run_project_flow() {
     fi
   fi
 
-  configure_project "$preferred_username" || return 1
+  configure_project "$preferred_username" || account_status=$?
+  if [ "$account_status" -eq 2 ]; then
+    return 0
+  elif [ "$account_status" -ne 0 ]; then
+    return 1
+  fi
   prepare_and_commit || commit_status=$?
   if [ "$commit_status" -eq 2 ]; then
     return 0
@@ -4268,6 +4281,7 @@ advanced_select_account_for_history() {
   local owner="$1"
   local index=""
   local answer=""
+  local add_choice=""
 
   if [ "$ACCOUNT_COUNT" -eq 0 ]; then
     advanced_info \
@@ -4286,14 +4300,21 @@ advanced_select_account_for_history() {
   else
     advanced_heading "Choose the GitHub account" "选择此次上传使用的 GitHub 账号"
     list_accounts_compact
+    add_choice=$((ACCOUNT_COUNT + 1))
     if [ "$ADVANCED_LANGUAGE" = "en" ]; then
-      printf '  n) Add another account\n'
+      printf '  %s) Add another account\n' "$add_choice"
+      printf '  0) Cancel\n'
     else
-      printf '  n) 添加另一个账号\n'
+      printf '  %s) 添加另一个账号\n' "$add_choice"
+      printf '  0) 取消\n'
     fi
     while true; do
       answer="$(advanced_prompt_value "Choose" "选择" "1")" || return 1
-      if [ "$(lowercase "$answer")" = "n" ]; then
+      if [ "$answer" = "0" ]; then
+        advanced_info "Account selection canceled." "已取消选择账号。"
+        return 2
+      fi
+      if [ "$answer" = "$add_choice" ]; then
         advanced_add_account || return 1
         return 0
       fi
@@ -4351,6 +4372,7 @@ advanced_verify_repository_access() {
 advanced_prepare_history_destination() {
   local input=""
   local remote_url=""
+  local selection_status=0
 
   advanced_heading "Destination repository" "选择接收重建历史的仓库"
   advanced_muted \
@@ -4366,7 +4388,11 @@ advanced_prepare_history_destination() {
   CURRENT_REPOSITORY_OWNER="$REPOSITORY_OWNER"
   CURRENT_REPOSITORY_NAME="$REPOSITORY_NAME"
 
-  advanced_select_account_for_history "$CURRENT_REPOSITORY_OWNER" || return 1
+  advanced_select_account_for_history \
+    "$CURRENT_REPOSITORY_OWNER" || selection_status=$?
+  if [ "$selection_status" -ne 0 ]; then
+    return "$selection_status"
+  fi
   if ! advanced_verify_key_matches_username "$BOUND_IDENTITY_FILE" "$BOUND_USERNAME"; then
     return 1
   fi
@@ -4703,6 +4729,7 @@ run_historical_release_import() {
   local parent=""
   local index=0
   local choice=""
+  local destination_status=0
   local publish_status=0
 
   reset_history_releases
@@ -4781,7 +4808,12 @@ run_historical_release_import() {
     HISTORY_CREATE_TAGS=false
   fi
 
-  advanced_prepare_history_destination || return 1
+  advanced_prepare_history_destination || destination_status=$?
+  if [ "$destination_status" -eq 2 ]; then
+    return 0
+  elif [ "$destination_status" -ne 0 ]; then
+    return 1
+  fi
 
   advanced_heading "Review the temporary history construction" "核对即将创建的临时历史"
   advanced_muted \
@@ -4953,9 +4985,18 @@ update_select_current_account() {
     printf '  %s) %s\n' "$((index + 1))" "${ACCOUNT_USERNAMES[$index]}"
     index=$((index + 1))
   done
+  if [ "$ADVANCED_LANGUAGE" = "en" ]; then
+    printf '  0) Cancel\n'
+  else
+    printf '  0) 取消\n'
+  fi
 
   while true; do
     choice="$(advanced_prompt_value "Choose" "选择" "1")" || return 1
+    if [ "$choice" = "0" ]; then
+      advanced_info "Update canceled." "已取消同步改名。"
+      return 2
+    fi
     if [[ "$choice" =~ ^[0-9]+$ ]] &&
        [ "$choice" -ge 1 ] && [ "$choice" -le "$ACCOUNT_COUNT" ]; then
       index=$((choice - 1))
@@ -5364,6 +5405,7 @@ update_apply_validated_settings() {
 
 run_update_command() {
   local choice=""
+  local selection_status=0
   local username_changed="no"
   local repository_changed="no"
   local default_owner=""
@@ -5393,7 +5435,12 @@ run_update_command() {
 
   UPDATE_OLD_OWNER="$CURRENT_REPOSITORY_OWNER"
   UPDATE_OLD_REPOSITORY="$CURRENT_REPOSITORY_NAME"
-  update_select_current_account || return 1
+  update_select_current_account || selection_status=$?
+  if [ "$selection_status" -eq 2 ]; then
+    return 0
+  elif [ "$selection_status" -ne 0 ]; then
+    return 1
+  fi
 
   advanced_heading "Current project" "当前项目信息"
   advanced_muted \
@@ -5905,6 +5952,8 @@ language_menu() {
 }
 
 switch_project_account() {
+  local selection_status=0
+
   require_core_commands
   if ! locate_project no; then
     warn "The current folder is not a Git project." "当前文件夹还不是 Git 项目。"
@@ -5920,9 +5969,12 @@ switch_project_account() {
       "当前项目还没有可识别的 GitHub 仓库。"
     return 1
   fi
-  if ! select_account \
+  select_account \
     "Which GitHub account should this project use?" \
-    "要把当前项目切换到哪个 GitHub 账号？"; then
+    "要把当前项目切换到哪个 GitHub 账号？" || selection_status=$?
+  if [ "$selection_status" -eq 2 ]; then
+    return 0
+  elif [ "$selection_status" -ne 0 ]; then
     return 1
   fi
 

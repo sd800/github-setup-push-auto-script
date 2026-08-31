@@ -6,6 +6,14 @@
 
 All notable changes to Auto Script for GitHub Setup and Push are documented in this file.
 
+## 2.1.1 - 2026-08-31
+
+### Changed
+
+- Standardized every choose-one menu on consecutive numeric options. Account selection now uses `1`, `2`, `3`, and so on; `0` consistently returns or cancels, while direct confirmations remain explicit yes-or-no questions.
+- Replaced the historical-import account menu's letter-based “add another account” option with the next available number.
+- Documented the shared input rules in both README versions and added regression checks to prevent letter-based menu options from returning.
+
 ## 2.1.0 - 2026-08-31
 
 ### Added

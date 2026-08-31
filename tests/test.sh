@@ -1212,6 +1212,68 @@ test_historical_release_import() {
   HISTORY_MAX_FILE_BYTES="$original_max"
 }
 
+test_numeric_account_selection() {
+  local saved_ui_prompt_function=""
+  local saved_advanced_prompt_function=""
+  local saved_advanced_add_function=""
+  local menu_output="$TEST_TEMPORARY/numeric-account-menu.txt"
+  local selection_status=0
+
+  ACCOUNT_USERNAMES=("account-one" "account-two")
+  ACCOUNT_EMAILS=("one@example.com" "two@example.com")
+  ACCOUNT_COUNT=2
+  UI_LANGUAGE="en"
+  ADVANCED_LANGUAGE="en"
+
+  saved_ui_prompt_function="$(declare -f ui_prompt_value)"
+  ui_prompt_value() {
+    printf '%s' "$MENU_TEST_CHOICE"
+  }
+
+  MENU_TEST_CHOICE="2"
+  select_account > "$menu_output" 2>&1 || selection_status=$?
+  assert_equal "0" "$selection_status" "numeric account selection accepts a displayed account number"
+  assert_equal "account-two" "$SELECTED_USERNAME" "numeric account selection chooses the matching account"
+
+  selection_status=0
+  MENU_TEST_CHOICE="0"
+  select_account > "$menu_output" 2>&1 || selection_status=$?
+  assert_equal "2" "$selection_status" "zero cancels ordinary account selection without choosing an account"
+  if grep -Fq '  0) Cancel' "$menu_output"; then
+    pass "ordinary account selection displays zero as cancel"
+  else
+    fail_test "ordinary account selection displays zero as cancel"
+  fi
+  eval "$saved_ui_prompt_function"
+
+  saved_advanced_prompt_function="$(declare -f advanced_prompt_value)"
+  saved_advanced_add_function="$(declare -f advanced_add_account)"
+  advanced_prompt_value() {
+    printf '%s' "$MENU_TEST_CHOICE"
+  }
+  advanced_add_account() {
+    ADVANCED_ADD_CALLED="yes"
+    BOUND_USERNAME="account-three"
+    BOUND_EMAIL="three@example.com"
+  }
+
+  ADVANCED_ADD_CALLED="no"
+  selection_status=0
+  MENU_TEST_CHOICE="3"
+  advanced_select_account_for_history "organization" > "$menu_output" 2>&1 || selection_status=$?
+  assert_equal "0" "$selection_status" "the next consecutive number adds another account"
+  assert_equal "yes" "$ADVANCED_ADD_CALLED" "numeric add-account selection opens account setup"
+  if grep -Fq '  3) Add another account' "$menu_output" &&
+     grep -Fq '  0) Cancel' "$menu_output"; then
+    pass "advanced account selection displays consecutive numeric choices"
+  else
+    fail_test "advanced account selection displays consecutive numeric choices"
+  fi
+
+  eval "$saved_advanced_prompt_function"
+  eval "$saved_advanced_add_function"
+}
+
 test_user_interface_symbols() {
   local script_file="$PROJECT_DIRECTORY/git-auto.sh"
   local launcher_file="$PROJECT_DIRECTORY/g.sh"
@@ -1274,6 +1336,23 @@ test_user_interface_symbols() {
   else
     fail_test "critical repository and SSH decisions have explicit English and Chinese copy"
   fi
+
+  if ! grep -Eq "printf ['\"]  [[:alpha:]])" "$script_file" &&
+     grep -Fq "printf '  %s) Add another account" "$script_file" &&
+     grep -Fq "printf '  %s) 添加另一个账号" "$script_file" &&
+     grep -Fq "printf '  0) Cancel" "$script_file" &&
+     grep -Fq "printf '  0) 取消" "$script_file"; then
+    pass "choose-one menus use numbers and expose zero as cancel or return"
+  else
+    fail_test "choose-one menus use numbers and expose zero as cancel or return"
+  fi
+
+  if grep -Fq 'When the script asks you to choose one item from a list' "$PROJECT_DIRECTORY/README.md" &&
+     grep -Fq '需要从列表中选一项时' "$PROJECT_DIRECTORY/README_zh.md"; then
+    pass "both README versions explain the shared numeric input rules"
+  else
+    fail_test "both README versions explain the shared numeric input rules"
+  fi
 }
 
 printf 'TAP version 13\n'
@@ -1298,6 +1377,7 @@ test_git_binding_and_commit
 test_guided_updates
 test_update_prompt_flow
 test_historical_release_import
+test_numeric_account_selection
 test_user_interface_symbols
 printf '1..%s\n' "$TEST_COUNT"
 

@@ -105,6 +105,12 @@ The central engine creates `private/` with owner-only directory permissions and 
 
 Every user of the public project gets an independent ignored `private/` folder. Personalized executable copies are not needed.
 
+## Simple input rules
+
+- When the script asks you to choose one item from a list, enter its displayed number: `1`, `2`, `3`, and so on.
+- Enter `0` to return or cancel without selecting an item.
+- When the script asks whether to perform one clearly described action, answer the displayed yes-or-no question instead of memorizing another menu number.
+
 ## What happens when you run g.sh
 
 The default workflow follows the state of the project:
