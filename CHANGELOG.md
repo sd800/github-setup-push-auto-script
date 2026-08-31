@@ -6,6 +6,23 @@
 
 All notable changes to Auto Script for GitHub Setup and Push are documented in this file.
 
+## 3.1.1 - 2026-08-31
+
+### Added
+
+- Added a seven-module `src/` layout for core UI and configuration, SSH, repository parsing, normal workflow, historical import, guided updates, and menus.
+- Added one reusable pagination system for every menu or enumerated list that can exceed eight items. Each page uses `1-8` and the allowed account letters, with `x` for the previous page, `y` for the next page, and `0` last.
+- Added a diagnostic-details interface through `GIT_AUTO_DEBUG_DETAILS=1`; normal output hides commit author, email, SSH Host, private-key path, push address, branch, and underlying push command.
+
+### Changed
+
+- Reduced `git-auto.sh` to a small dispatcher that validates every required module before loading any of them. The dispatcher and `src/` remain one self-contained central installation without third-party dependencies.
+- GitHub account lists are now sorted alphabetically without regard to letter case before menu labels are assigned.
+- Account labels after `1-8` use only `a b c d e f g h j k m n p r`. The keys `s` and `w` are reserved, while `i`, `l`, `o`, `q`, `t`, `u`, and `v` are excluded.
+- "Add another account" now uses `9` when eight or fewer accounts are saved and `z` when more than eight are saved.
+- Normal GitHub destination summaries now show only the account followed by the repository. Detailed identity and transport fields remain available in diagnostic mode or when they are required to explain a decision or error.
+- Historical release plans, skipped folders, risk files, and conflicting tag lists now use the same pagination rules instead of truncating or flooding long output.
+
 ## 2.1.1 - 2026-08-31
 
 ### Changed

@@ -584,7 +584,7 @@ test_private_configuration() {
   local engine_checksum_before=""
   local engine_checksum_after=""
 
-  engine_checksum_before="$(cksum "$PROJECT_DIRECTORY/git-auto.sh")"
+  engine_checksum_before="$(cksum "$PROJECT_DIRECTORY/git-auto.sh" "$PROJECT_DIRECTORY"/src/*.sh | cksum)"
   PRIVATE_DIRECTORY="$config_root/private"
   PRIVATE_CONFIG_FILE="$PRIVATE_DIRECTORY/config.txt"
   ensure_private_config
@@ -622,8 +622,8 @@ test_private_configuration() {
     fail_test "private account fields remain human-editable"
   fi
 
-  engine_checksum_after="$(cksum "$PROJECT_DIRECTORY/git-auto.sh")"
-  assert_equal "$engine_checksum_before" "$engine_checksum_after" "saving private settings never modifies the central engine"
+  engine_checksum_after="$(cksum "$PROJECT_DIRECTORY/git-auto.sh" "$PROJECT_DIRECTORY"/src/*.sh | cksum)"
+  assert_equal "$engine_checksum_before" "$engine_checksum_after" "saving private settings never modifies the dispatcher or source modules"
 
   PRIVATE_DIRECTORY="$original_private_directory"
   PRIVATE_CONFIG_FILE="$original_private_config"
@@ -633,14 +633,18 @@ test_private_configuration() {
 }
 
 test_central_distribution() {
+  local missing_module_root="$TEST_TEMPORARY/missing-module-installation"
+  local missing_module_output=""
+  local missing_module_status=0
+
   if [ ! -f "$PROJECT_DIRECTORY/git-auto.sh" ]; then
     fail_test "central git-auto.sh exists"
     return
   fi
   pass "central git-auto.sh exists"
 
-  if ! grep -Fq '# >>> GITHUB ACCOUNTS >>>' "$PROJECT_DIRECTORY/git-auto.sh" &&
-     ! grep -Fq '# interface-language:' "$PROJECT_DIRECTORY/git-auto.sh"; then
+  if ! grep -RFq '# >>> GITHUB ACCOUNTS >>>' "$PROJECT_DIRECTORY/git-auto.sh" "$PROJECT_DIRECTORY/src" &&
+     ! grep -RFq '# interface-language:' "$PROJECT_DIRECTORY/git-auto.sh" "$PROJECT_DIRECTORY/src"; then
     pass "central engine contains no personalized account or preference block"
   else
     fail_test "central engine contains no personalized account or preference block"
@@ -660,11 +664,29 @@ test_central_distribution() {
 
   if ! grep -Eq '^/?g\.sh/?$' "$PROJECT_DIRECTORY/.gitignore" &&
      [ "$(find "$PROJECT_DIRECTORY" -maxdepth 1 -type f -name '*.sh' | wc -l | tr -d ' ')" -eq 2 ] &&
-     grep -Fq 'run_project_flow()' "$PROJECT_DIRECTORY/git-auto.sh" &&
+     [ "$(find "$PROJECT_DIRECTORY/src" -maxdepth 1 -type f -name '*.sh' | wc -l | tr -d ' ')" -eq 7 ] &&
+     [ "$(wc -l < "$PROJECT_DIRECTORY/git-auto.sh" | tr -d ' ')" -le 100 ] &&
+     grep -Fq 'GIT_AUTO_MODULES=(' "$PROJECT_DIRECTORY/git-auto.sh" &&
+     grep -RFq 'run_project_flow()' "$PROJECT_DIRECTORY/src" &&
      ! grep -Fq 'run_project_flow()' "$PROJECT_DIRECTORY/g.sh"; then
-    pass "g.sh is public while git-auto.sh remains the only complete engine"
+    pass "git-auto.sh is a small dispatcher while src contains the central implementation"
   else
-    fail_test "g.sh is public while git-auto.sh remains the only complete engine"
+    fail_test "git-auto.sh is a small dispatcher while src contains the central implementation"
+  fi
+
+  mkdir -p "$missing_module_root/src" "$missing_module_root/private"
+  cp "$PROJECT_DIRECTORY/git-auto.sh" "$missing_module_root/git-auto.sh"
+  cp "$PROJECT_DIRECTORY"/src/*.sh "$missing_module_root/src/"
+  rm "$missing_module_root/src/40-history.sh"
+  GIT_AUTO_PRIVATE_DIRECTORY="$missing_module_root/private" \
+    GITHUB_AUTO_TESTING=1 \
+    bash "$missing_module_root/git-auto.sh" > /dev/null 2> "$missing_module_root/error.txt" || missing_module_status=$?
+  missing_module_output="$(< "$missing_module_root/error.txt")"
+  if [ "$missing_module_status" -ne 0 ] &&
+     printf '%s\n' "$missing_module_output" | grep -Fq 'Required program module is missing'; then
+    pass "dispatcher stops with an exact error before running an incomplete installation"
+  else
+    fail_test "dispatcher stops with an exact error before running an incomplete installation"
   fi
 }
 
@@ -1212,18 +1234,26 @@ test_historical_release_import() {
   HISTORY_MAX_FILE_BYTES="$original_max"
 }
 
-test_numeric_account_selection() {
+test_paged_account_selection() {
   local saved_ui_prompt_function=""
   local saved_advanced_prompt_function=""
   local saved_advanced_add_function=""
-  local menu_output="$TEST_TEMPORARY/numeric-account-menu.txt"
+  local menu_output="$TEST_TEMPORARY/paged-account-menu.txt"
+  local detail_output="$TEST_TEMPORARY/github-target-summary.txt"
   local selection_status=0
+  local index=0
+  local username=""
 
-  ACCOUNT_USERNAMES=("account-one" "account-two")
-  ACCOUNT_EMAILS=("one@example.com" "two@example.com")
-  ACCOUNT_COUNT=2
   UI_LANGUAGE="en"
   ADVANCED_LANGUAGE="en"
+
+  ACCOUNT_USERNAMES=("Zulu" "alpha" "Bravo")
+  ACCOUNT_EMAILS=("z@example.com" "a@example.com" "b@example.com")
+  ACCOUNT_COUNT=3
+  sort_accounts_alphabetically
+  assert_equal "alpha|Bravo|Zulu" \
+    "${ACCOUNT_USERNAMES[0]}|${ACCOUNT_USERNAMES[1]}|${ACCOUNT_USERNAMES[2]}" \
+    "account menus sort usernames alphabetically without regard to case"
 
   saved_ui_prompt_function="$(declare -f ui_prompt_value)"
   ui_prompt_value() {
@@ -1232,8 +1262,8 @@ test_numeric_account_selection() {
 
   MENU_TEST_CHOICE="2"
   select_account > "$menu_output" 2>&1 || selection_status=$?
-  assert_equal "0" "$selection_status" "numeric account selection accepts a displayed account number"
-  assert_equal "account-two" "$SELECTED_USERNAME" "numeric account selection chooses the matching account"
+  assert_equal "0" "$selection_status" "account selection accepts a displayed number"
+  assert_equal "Bravo" "$SELECTED_USERNAME" "number selection uses the stable sorted account order"
 
   selection_status=0
   MENU_TEST_CHOICE="0"
@@ -1253,30 +1283,126 @@ test_numeric_account_selection() {
   }
   advanced_add_account() {
     ADVANCED_ADD_CALLED="yes"
-    BOUND_USERNAME="account-three"
-    BOUND_EMAIL="three@example.com"
+    BOUND_USERNAME="added-account"
+    BOUND_EMAIL="added@example.com"
   }
 
+  ACCOUNT_USERNAMES=("account-one" "account-two")
+  ACCOUNT_EMAILS=("one@example.com" "two@example.com")
+  ACCOUNT_COUNT=2
   ADVANCED_ADD_CALLED="no"
   selection_status=0
-  MENU_TEST_CHOICE="3"
+  MENU_TEST_CHOICE="9"
   advanced_select_account_for_history "organization" > "$menu_output" 2>&1 || selection_status=$?
-  assert_equal "0" "$selection_status" "the next consecutive number adds another account"
-  assert_equal "yes" "$ADVANCED_ADD_CALLED" "numeric add-account selection opens account setup"
-  if grep -Fq '  3) Add another account' "$menu_output" &&
+  assert_equal "0" "$selection_status" "nine adds an account while no more than eight are saved"
+  assert_equal "yes" "$ADVANCED_ADD_CALLED" "the small-menu add option opens account setup"
+  if grep -Fq '  9) Add another account' "$menu_output" &&
      grep -Fq '  0) Cancel' "$menu_output"; then
-    pass "advanced account selection displays consecutive numeric choices"
+    pass "small account menus display nine for add and zero last"
   else
-    fail_test "advanced account selection displays consecutive numeric choices"
+    fail_test "small account menus display nine for add and zero last"
   fi
+
+  ACCOUNT_USERNAMES=()
+  ACCOUNT_EMAILS=()
+  ACCOUNT_COUNT=0
+  index=1
+  while [ "$index" -le 24 ]; do
+    username="$(printf 'account-%02d' "$index")"
+    ACCOUNT_USERNAMES[$ACCOUNT_COUNT]="$username"
+    ACCOUNT_EMAILS[$ACCOUNT_COUNT]="$username@example.com"
+    ACCOUNT_COUNT=$((ACCOUNT_COUNT + 1))
+    index=$((index + 1))
+  done
+
+  print_account_menu_options 0 yes en > "$menu_output"
+  if grep -Fq '  a) account-09' "$menu_output" &&
+     grep -Fq '  r) account-22' "$menu_output" &&
+     grep -Fq '  y) Next page' "$menu_output" &&
+     grep -Fq '  z) Add another account' "$menu_output" &&
+     [ "$(tail -n 1 "$menu_output")" = '  0) Cancel' ]; then
+    pass "long account menus use allowed letters, next-page, add, and zero last"
+  else
+    fail_test "long account menus use allowed letters, next-page, add, and zero last"
+  fi
+
+  if ! grep -Eq '^  (i|l|o|q|s|t|u|v|w)\)' "$menu_output"; then
+    pass "reserved and excluded letters are never assigned to account choices"
+  else
+    fail_test "reserved and excluded letters are never assigned to account choices"
+  fi
+
+  print_account_menu_options 1 yes en > "$menu_output"
+  if grep -Fq '  1) account-23' "$menu_output" &&
+     grep -Fq '  2) account-24' "$menu_output" &&
+     grep -Fq '  x) Previous page' "$menu_output" &&
+     ! grep -Fq '  y) Next page' "$menu_output" &&
+     [ "$(tail -n 1 "$menu_output")" = '  0) Cancel' ]; then
+    pass "last account page displays previous-page and keeps zero last"
+  else
+    fail_test "last account page displays previous-page and keeps zero last"
+  fi
+
+  paged_choice_to_index "a" 0 "$ACCOUNT_COUNT"
+  assert_equal "8" "$PAGED_CHOICE_INDEX" "letter a selects the ninth item on a page"
+  paged_choice_to_index "r" 0 "$ACCOUNT_COUNT"
+  assert_equal "21" "$PAGED_CHOICE_INDEX" "letter r selects the final item on a full page"
+  paged_choice_to_index "2" 1 "$ACCOUNT_COUNT"
+  assert_equal "23" "$PAGED_CHOICE_INDEX" "page-relative labels select the matching overflow item"
+
+  ACCOUNT_COUNT=9
+  ADVANCED_ADD_CALLED="no"
+  selection_status=0
+  MENU_TEST_CHOICE="z"
+  advanced_select_account_for_history "organization" > "$menu_output" 2>&1 || selection_status=$?
+  assert_equal "0" "$selection_status" "z adds an account after more than eight are saved"
+  assert_equal "yes" "$ADVANCED_ADD_CALLED" "the long-menu add option opens account setup"
+
+  unset GIT_AUTO_DEBUG_DETAILS
+  github_target_summary \
+    normal account-one owner-name repository-name author-name author@example.com \
+    "$TEST_TEMPORARY/private-key" 'git@github-account:owner-name/repository-name.git' main \
+    > "$detail_output"
+  assert_equal "GitHub account: account-one" "$(sed -n '1p' "$detail_output")" \
+    "normal destination summary shows the account first"
+  assert_equal "GitHub repository: owner-name/repository-name" "$(sed -n '2p' "$detail_output")" \
+    "normal destination summary shows the repository second"
+  if ! grep -Eq 'Commit author|Commit email|SSH private key|Push address|Local branch' "$detail_output"; then
+    pass "normal destination summary hides technical identity and transport details"
+  else
+    fail_test "normal destination summary hides technical identity and transport details"
+  fi
+
+  GIT_AUTO_DEBUG_DETAILS=1
+  github_target_summary \
+    normal account-one owner-name repository-name author-name author@example.com \
+    "$TEST_TEMPORARY/private-key" 'git@github-account:owner-name/repository-name.git' main \
+    > "$detail_output"
+  if grep -Fq 'Commit author name: author-name' "$detail_output" &&
+     grep -Fq 'Commit email: author@example.com' "$detail_output" &&
+     grep -Fq 'SSH private key:' "$detail_output" &&
+     grep -Fq 'Push address:' "$detail_output" &&
+     grep -Fq 'Local branch: main' "$detail_output"; then
+    pass "diagnostic interface restores technical destination details"
+  else
+    fail_test "diagnostic interface restores technical destination details"
+  fi
+  unset GIT_AUTO_DEBUG_DETAILS
 
   eval "$saved_advanced_prompt_function"
   eval "$saved_advanced_add_function"
 }
 
 test_user_interface_symbols() {
-  local script_file="$PROJECT_DIRECTORY/git-auto.sh"
+  local script_file="$TEST_TEMPORARY/combined-script-source.txt"
   local launcher_file="$PROJECT_DIRECTORY/g.sh"
+
+  {
+    sed -n '1,$p' "$PROJECT_DIRECTORY/git-auto.sh"
+    for source_module in "$PROJECT_DIRECTORY"/src/*.sh; do
+      sed -n '1,$p' "$source_module"
+    done
+  } > "$script_file"
 
   if ! grep -Fq 'ℹ' "$script_file" &&
      ! grep -Fq '✓' "$script_file" &&
@@ -1337,21 +1463,21 @@ test_user_interface_symbols() {
     fail_test "critical repository and SSH decisions have explicit English and Chinese copy"
   fi
 
-  if ! grep -Eq "printf ['\"]  [[:alpha:]])" "$script_file" &&
-     grep -Fq "printf '  %s) Add another account" "$script_file" &&
-     grep -Fq "printf '  %s) 添加另一个账号" "$script_file" &&
-     grep -Fq "printf '  0) Cancel" "$script_file" &&
-     grep -Fq "printf '  0) 取消" "$script_file"; then
-    pass "choose-one menus use numbers and expose zero as cancel or return"
+  if grep -Fq 'PAGED_CHOICE_LETTERS="abcdefghjkmnpr"' "$script_file" &&
+     grep -Fq "printf '  x) Previous page" "$script_file" &&
+     grep -Fq "printf '  y) Next page" "$script_file" &&
+     grep -Fq "printf 'z'" "$script_file" &&
+     grep -Fq "printf '  0) Cancel" "$script_file"; then
+    pass "shared menu component reserves letters and implements x, y, z, and zero"
   else
-    fail_test "choose-one menus use numbers and expose zero as cancel or return"
+    fail_test "shared menu component reserves letters and implements x, y, z, and zero"
   fi
 
-  if grep -Fq 'When the script asks you to choose one item from a list' "$PROJECT_DIRECTORY/README.md" &&
-     grep -Fq '需要从列表中选一项时' "$PROJECT_DIRECTORY/README_zh.md"; then
-    pass "both README versions explain the shared numeric input rules"
+  if grep -Fq 'Menus with eight or fewer items' "$PROJECT_DIRECTORY/README.md" &&
+     grep -Fq '菜单不超过 8 项时' "$PROJECT_DIRECTORY/README_zh.md"; then
+    pass "both README versions explain the shared menu and pagination rules"
   else
-    fail_test "both README versions explain the shared numeric input rules"
+    fail_test "both README versions explain the shared menu and pagination rules"
   fi
 }
 
@@ -1377,7 +1503,7 @@ test_git_binding_and_commit
 test_guided_updates
 test_update_prompt_flow
 test_historical_release_import
-test_numeric_account_selection
+test_paged_account_selection
 test_user_interface_symbols
 printf '1..%s\n' "$TEST_COUNT"
 

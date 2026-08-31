@@ -4,25 +4,33 @@
 
 [Chinese](README_zh.md)
 
-Auto Script for GitHub Setup and Push is a centralized Bash utility for anyone who wants a shorter, safer path from local changes to a verified GitHub push. One `git-auto.sh` engine handles the detailed workflow, while each project uses the same small `g.sh` interface.
+Auto Script for GitHub Setup and Push is a centralized Bash utility for anyone who wants a shorter, safer path from local changes to a verified GitHub push. A small `git-auto.sh` dispatcher loads the central implementation from `src/`, while each project uses the same small `g.sh` interface.
 
 The everyday interface stays deliberately small:
 
 - `./g.sh`: Detect the current Git repository, verify its GitHub account and destination, review changes, commit, and push.
 - `./g.sh new`: Add or import a GitHub account, then optionally use it for the current project.
 - `./g.sh update`: Synchronize local settings after a GitHub username, repository name, or repository owner changes.
-- `./g.sh menu`: Open account, project verification, preference, and advanced tools.
+- `./g.sh menu`: Open tool menu for account, project verification, preference, and advanced features.
 
 SSH identities, account verification, repository-specific authorship, release commit messages, upstream branches, and strict push identity are handled behind this interface.
 
 ## Architecture
 
-The project uses one engine, one private profile, and one launcher per working project:
+The project uses one modular central program, one private profile, and one launcher per working project:
 
 ```text
 git-auto/
-|-- git-auto.sh
+|-- git-auto.sh       small central dispatcher
 |-- g.sh              public copy-ready lightweight launcher
+|-- src/              central Bash implementation
+|   |-- 00-core.sh
+|   |-- 10-ssh.sh
+|   |-- 20-repository.sh
+|   |-- 30-workflow.sh
+|   |-- 40-history.sh
+|   |-- 50-update.sh
+|   `-- 60-menu.sh
 |-- README.md
 |-- README_zh.md
 |-- CHANGELOG.md
@@ -36,7 +44,9 @@ your-project/
 `-- project files...
 ```
 
-`git-auto.sh` is the only full implementation. There is no public/personal script pair and no duplicated account block inside executable code. Updating the central engine updates the behavior used by every launcher.
+`git-auto.sh` only locates and loads the required modules beside it. The modules divide configuration and interface behavior, SSH identity handling, repository parsing, normal push workflow, historical import, rename synchronization, and menus. Missing modules stop the program before the workflow starts and identify the exact missing file.
+
+The dispatcher and `src/` folder form one central installation and must be moved or copied together. They remain self-contained Bash code with no package dependency, no public/personal script pair, and no duplicated account block inside executable code. Updating this central installation updates the behavior used by every launcher.
 
 ## First-time setup
 
@@ -107,8 +117,11 @@ Every user of the public project gets an independent ignored `private/` folder. 
 
 ## Simple input rules
 
-- When the script asks you to choose one item from a list, enter its displayed number: `1`, `2`, `3`, and so on.
-- Enter `0` to return or cancel without selecting an item.
+- Menus with eight or fewer items use `1` through `8`.
+- Longer lists keep `1` through `8`, then use `a b c d e f g h j k m n p r`. GitHub accounts are sorted alphabetically without regard to letter case before these labels are assigned.
+- When a list needs more than one page, use `x` for the previous page and `y` for the next page. The letters `s` and `w` are reserved for future features; `i`, `l`, `o`, `q`, `t`, `u`, and `v` are never used as choices.
+- In an account list, "Add another account" uses `9` while there are eight or fewer saved accounts and `z` after that.
+- Enter `0`, always shown last, to return or cancel without selecting an item.
 - When the script asks whether to perform one clearly described action, answer the displayed yes-or-no question instead of memorizing another menu number.
 
 ## What happens when you run g.sh
@@ -120,7 +133,7 @@ The default workflow follows the state of the project:
 3. Stop before changing files when HEAD is detached, merge conflicts remain, or a merge, rebase, cherry-pick, or revert is unfinished.
 4. Read `origin`. If it uses an SSH Host such as `github800`, verify that Host's exact key and GitHub username first. Ask for a repository address only when `origin` does not identify one.
 5. Prefer the repository's saved account, then a verified origin account, then an unambiguous owner match. Show a username choice only when no safe automatic match exists.
-6. Confirm read access to the exact destination with the selected private key, then save only repository-local author, identity, engine path, and `origin` settings.
+6. Show the selected GitHub account followed by the destination repository, confirm read access, then save the repository-local settings. Technical identity details stay hidden during normal use and remain available through the script's diagnostic interface.
 7. Show `git status --short` before staging. The user can accept the suggested commit message, replace it, or enter `:cancel`. Only after that decision does the script run `git add -A`.
 8. Create the commit, show what it contains, and push the current branch with the one verified key. Ordinary pushes never use force.
 
