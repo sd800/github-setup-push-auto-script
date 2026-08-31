@@ -36,7 +36,8 @@ git-auto/
 |   |-- 30-workflow.sh
 |   |-- 40-history.sh
 |   |-- 50-update.sh
-|   `-- 60-menu.sh
+|   |-- 60-menu.sh
+|   `-- option.txt      纯技术开关配置；当前为空
 |-- README.md
 |-- README_zh.md
 |-- CHANGELOG.md
@@ -118,13 +119,9 @@ email: alice@example.com
 
 每个字段独占一行，账号之间用空行分隔。每个账号只有 GitHub 用户名和提交邮箱，提交显示名始终由 GitHub 用户名自动确定。
 
-历史版本标签默认关闭。在高级功能中开启后，配置文件会增加下面这一行：
+`display-theme` 继续保存在这份私人配置中，因为它是多值显示偏好，并非单纯的开启或关闭开关。
 
-```text
-add-tags-to-historical-release: enabled
-```
-
-关闭这项设置时，脚本会从 `private/config.txt` 中删除整行内容。
+需要长期保存的二元开关只能写入 `src/option.txt`：每行使用一个固定技术标签，值只能是 `enabled` 或 `disabled`。当前版本没有需要保存的二元开关，因此 `src/option.txt` 特意保持为空；其中不写入用户资料或说明文字。
 
 中央引擎会自动创建 `private/`，并把目录和配置文件权限分别限制为只有当前用户可以访问和读写。保存时采用原子替换，不会在其中写入私钥、密钥口令、访问令牌或登录密码。
 
@@ -237,7 +234,7 @@ gh repo clone owner/repository
 
 流程会检查疑似敏感文件和超大文件，展示 `git log --oneline --reverse`，并在上传前验证选定的 GitHub 身份。默认使用可靠识别到的发布日期重建提交时间；用户可以选择不写入历史日期，此时每个提交保留 Git 创建它时自动记录的本机时间。
 
-对应的轻量 `vX.Y.Z` 标签默认关闭，可在高级功能中开启。标签会显示在 GitHub 的 Tags 页面，不会改变文件内容。替换已有远端 `main` 必须明确确认，并使用精确的 `--force-with-lease`。脚本不会创建备份分支，也不会改动其他远端分支。
+替换已有远端 `main` 必须明确确认，并使用精确的 `--force-with-lease`。脚本不会创建备份分支，也不会改动其他远端分支。历史重建只创建版本提交，不创建或修改 Git 标签。
 
 上传完成后，流程会询问是否把重建后的 `main` 衔接到现有且通常并非空白的日常工作目录。脚本不会复制覆盖、删除或替换当前项目文件。目录还没有 Git 记录时才执行 `git init`；已有但与重建记录无关时，会先说明影响并取得确认。随后使用 mixed reset 只移动分支历史，把当前文件与最后一个历史版本之间的差异保留为普通未提交改动。最后写入轻量 `g.sh` 以及所属账号、密钥和 origin 绑定，之后可直接运行 `./g.sh` 提交并上传当前工作。
 
@@ -256,6 +253,7 @@ gh repo clone owner/repository
 中央引擎只写入当前流程确实需要的位置：
 
 - `private/config.txt`：共享的个人偏好与账号基本资料。
+- `src/option.txt`：需要长期保存的二元技术开关；当前为空。
 - `~/.ssh`：GitHub SSH 密钥和配置。
 - 目标仓库的 `.git/config` 与 `.git/info/exclude`：本地账号绑定和启动器排除。
 - 临时目录：严格 SSH 包装程序和历史版本重建仓库。

@@ -414,10 +414,6 @@ ensure_bound_identity_with_github_verification() {
     success \
       "GitHub account confirmed: $BOUND_USERNAME." \
       "已确认本次使用 GitHub 账号：${BOUND_USERNAME}。"
-    technical_detail \
-      normal \
-      "SSH Host $BOUND_SSH_ALIAS uses key $(human_path "$BOUND_IDENTITY_FILE")." \
-      "SSH 主机名 ${BOUND_SSH_ALIAS} 使用密钥 $(human_path "$BOUND_IDENTITY_FILE")。"
     return 0
   fi
 
@@ -428,10 +424,6 @@ ensure_bound_identity_with_github_verification() {
       *)
         if ssh_alias_is_github "$CURRENT_ORIGIN_HOST"; then
           preferred_alias="$CURRENT_ORIGIN_HOST"
-          technical_detail \
-            normal \
-            "The existing origin uses SSH Host $preferred_alias; that existing key will be checked first." \
-            "现有 origin 使用 SSH 主机名 ${preferred_alias}，将优先核对它指定的现有密钥。"
         fi
         ;;
     esac
@@ -456,10 +448,6 @@ ensure_bound_identity_with_github_verification() {
       success \
         "GitHub account confirmed: $BOUND_USERNAME." \
         "已确认本次使用 GitHub 账号：${BOUND_USERNAME}。"
-      technical_detail \
-        normal \
-        "SSH Host $BOUND_SSH_ALIAS uses key $(human_path "$BOUND_IDENTITY_FILE")." \
-        "SSH 主机名 ${BOUND_SSH_ALIAS} 使用密钥 $(human_path "$BOUND_IDENTITY_FILE")。"
       return 0
     fi
   fi
@@ -470,10 +458,6 @@ ensure_bound_identity_with_github_verification() {
     success \
       "GitHub account confirmed: $BOUND_USERNAME." \
       "已确认本次使用 GitHub 账号：${BOUND_USERNAME}。"
-    technical_detail \
-      normal \
-      "SSH Host $BOUND_SSH_ALIAS uses key $(human_path "$BOUND_IDENTITY_FILE")." \
-      "SSH 主机名 ${BOUND_SSH_ALIAS} 使用密钥 $(human_path "$BOUND_IDENTITY_FILE")。"
     return 0
   fi
 
@@ -667,18 +651,8 @@ verify_repository_access() {
 configure_project() {
   local preferred_username="${1:-}"
   local purpose="${2:-push}"
-  local proposed_remote_url=""
 
-  if read_origin_repository; then
-    technical_detail \
-      normal \
-      "Recognized the existing origin as ${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME}." \
-      "已从现有 origin 识别出 GitHub 仓库：${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME}。"
-    technical_detail \
-      normal \
-      "Current origin: $CURRENT_ORIGIN_URL" \
-      "当前 origin：$CURRENT_ORIGIN_URL"
-  else
+  if ! read_origin_repository; then
     warn \
       "This local Git repository has no origin that identifies a GitHub repository." \
       "这个本地 Git 仓库还没有能够识别为 GitHub 仓库的 origin。"
@@ -705,11 +679,7 @@ configure_project() {
       normal \
       "$BOUND_USERNAME" \
       "$CURRENT_REPOSITORY_OWNER" \
-      "$CURRENT_REPOSITORY_NAME" \
-      "$BOUND_USERNAME" \
-      "$BOUND_EMAIL" \
-      "$BOUND_IDENTITY_FILE" \
-      "git@${BOUND_SSH_ALIAS}:${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME}.git"
+      "$CURRENT_REPOSITORY_NAME"
     if [ "$purpose" = "push" ]; then
       info \
         "Using the saved owner account and SSH key. This run will go directly to add, commit, and push." \
@@ -729,35 +699,12 @@ configure_project() {
     return 1
   fi
 
-  proposed_remote_url="git@${BOUND_SSH_ALIAS}:${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME}.git"
-
   heading "Confirm the GitHub upload target" "确认 GitHub 上传目标"
   github_target_summary \
     normal \
     "$BOUND_USERNAME" \
     "$CURRENT_REPOSITORY_OWNER" \
-    "$CURRENT_REPOSITORY_NAME" \
-    "$BOUND_USERNAME" \
-    "$BOUND_EMAIL" \
-    "$BOUND_IDENTITY_FILE" \
-    "$proposed_remote_url"
-
-  if [ -n "$CURRENT_ORIGIN_URL" ] && [ "$CURRENT_ORIGIN_URL" != "$proposed_remote_url" ]; then
-    technical_detail \
-      normal \
-      "origin will change from $CURRENT_ORIGIN_URL to $proposed_remote_url so future fetches and pushes use the selected owner account." \
-      "origin 将从 ${CURRENT_ORIGIN_URL} 更新为 ${proposed_remote_url}，以后拉取和推送都会使用所选的仓库所属账号。"
-  elif [ -z "$CURRENT_ORIGIN_URL" ]; then
-    technical_detail \
-      normal \
-      "origin will be added as $proposed_remote_url." \
-      "将新增 origin：${proposed_remote_url}。"
-  else
-    technical_detail \
-      normal \
-      "The existing origin already uses the selected owner account and will not change." \
-      "现有 origin 已经使用所选的仓库所属账号，不需要修改。"
-  fi
+    "$CURRENT_REPOSITORY_NAME"
 
   if ! save_project_binding; then
     fail \
@@ -767,10 +714,6 @@ configure_project() {
   success \
     "Saved this GitHub account and repository for the current project." \
     "已为当前项目保存上述 GitHub 账号和仓库。"
-  technical_detail \
-    normal \
-    "The repository-local settings include the commit author, exact SSH key, and origin address." \
-    "当前仓库的本地设置还包括提交作者、指定 SSH 密钥和 origin 地址。"
 }
 
 prompt_commit_message() {
@@ -917,17 +860,7 @@ push_current_branch() {
     normal \
     "$BOUND_USERNAME" \
     "$CURRENT_REPOSITORY_OWNER" \
-    "$CURRENT_REPOSITORY_NAME" \
-    "$BOUND_USERNAME" \
-    "$BOUND_EMAIL" \
-    "$BOUND_IDENTITY_FILE" \
-    "git@${BOUND_SSH_ALIAS}:${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME}.git" \
-    "$branch"
-  technical_detail \
-    normal \
-    "The script will run git push -u origin $branch with only $(human_path "$BOUND_IDENTITY_FILE"). It will not force-push." \
-    "接下来只使用密钥 $(human_path "$BOUND_IDENTITY_FILE") 执行 git push -u origin ${branch}；不会强制推送。"
-
+    "$CURRENT_REPOSITORY_NAME"
   if git -C "$GIT_ROOT" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' >/dev/null 2>&1; then
     output="$(run_git_with_identity "$BOUND_IDENTITY_FILE" push 2>&1)" || push_status=$?
   else
@@ -942,10 +875,6 @@ push_current_branch() {
   success \
     "Upload completed with account $BOUND_USERNAME to ${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME}." \
     "已使用账号 $BOUND_USERNAME 上传到 ${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME}。"
-  technical_detail \
-    normal \
-    "Uploaded local branch $branch." \
-    "已上传本地分支 ${branch}。"
 }
 
 explain_push_failure() {

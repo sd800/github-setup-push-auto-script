@@ -79,7 +79,32 @@ ensure_private_config() {
   chmod 600 "$PRIVATE_CONFIG_FILE" || return 1
 }
 
+ensure_option_config() {
+  local option_directory="${OPTION_CONFIG_FILE%/*}"
+  local temporary_file=""
+
+  if [ -f "$OPTION_CONFIG_FILE" ]; then
+    return 0
+  fi
+
+  [ -d "$option_directory" ] || return 1
+  temporary_file="$(safe_mktemp_file "$option_directory" "option")" || return 1
+  : > "$temporary_file"
+  chmod 644 "$temporary_file" || {
+    rm -f "$temporary_file"
+    return 1
+  }
+  mv "$temporary_file" "$OPTION_CONFIG_FILE" || {
+    rm -f "$temporary_file"
+    return 1
+  }
+}
+
 ensure_private_config || exit 1
+ensure_option_config || {
+  printf '%s\n' "[Error] Could not prepare the option configuration file: $OPTION_CONFIG_FILE" >&2
+  exit 1
+}
 
 file_mode() {
   local file="$1"
@@ -150,24 +175,6 @@ read_saved_theme() {
       ;;
     *)
       printf 'auto'
-      ;;
-  esac
-}
-
-read_saved_history_tags() {
-  local line=""
-  local value=""
-
-  line="$(grep -m 1 -F "$HISTORY_TAGS_FIELD_PREFIX" "$PRIVATE_CONFIG_FILE" 2>/dev/null || true)"
-  value="$(trim "${line#"$HISTORY_TAGS_FIELD_PREFIX"}")"
-  value="$(lowercase "$value")"
-
-  case "$value" in
-    enabled|true|yes|on)
-      printf 'true'
-      ;;
-    *)
-      printf 'false'
       ;;
   esac
 }
@@ -399,38 +406,11 @@ muted() {
   print_colored "$COLOR_MUTED" "$(localized_text "$1" "${2:-$1}")"
 }
 
-technical_details_enabled() {
-  case "$(lowercase "${GIT_AUTO_DEBUG_DETAILS:-0}")" in
-    1|true|yes|on)
-      return 0
-      ;;
-  esac
-  return 1
-}
-
-technical_detail() {
-  local style="$1"
-  local english_text="$2"
-  local chinese_text="$3"
-
-  technical_details_enabled || return 0
-  if [ "$style" = "advanced" ]; then
-    advanced_muted "$english_text" "$chinese_text"
-  else
-    muted "$english_text" "$chinese_text"
-  fi
-}
-
 github_target_summary() {
   local style="$1"
   local account="$2"
   local owner="$3"
   local repository="$4"
-  local author_name="${5:-}"
-  local author_email="${6:-}"
-  local identity_file="${7:-}"
-  local remote_url="${8:-}"
-  local branch="${9:-}"
 
   if [ "$style" = "advanced" ]; then
     advanced_muted "GitHub account: $account" "GitHub 账号：$account"
@@ -444,26 +424,6 @@ github_target_summary() {
       "GitHub 仓库：$owner/$repository"
   fi
 
-  [ -z "$author_name" ] || technical_detail \
-    "$style" \
-    "Commit author name: $author_name" \
-    "提交作者名称：$author_name"
-  [ -z "$author_email" ] || technical_detail \
-    "$style" \
-    "Commit email: $author_email" \
-    "提交邮箱：$author_email"
-  [ -z "$identity_file" ] || technical_detail \
-    "$style" \
-    "SSH private key: $(human_path "$identity_file")" \
-    "SSH 私钥：$(human_path "$identity_file")"
-  [ -z "$remote_url" ] || technical_detail \
-    "$style" \
-    "Push address: $remote_url" \
-    "上传地址：$remote_url"
-  [ -z "$branch" ] || technical_detail \
-    "$style" \
-    "Local branch: $branch" \
-    "本地分支：$branch"
 }
 
 fail() {
@@ -698,7 +658,7 @@ load_accounts() {
       \#*)
         continue
         ;;
-      "$LANGUAGE_FIELD_PREFIX"*|"$THEME_FIELD_PREFIX"*|"$HISTORY_TAGS_FIELD_PREFIX"*)
+      "$LANGUAGE_FIELD_PREFIX"*|"$THEME_FIELD_PREFIX"*|add-tags-to-historical-release:*)
         continue
         ;;
     esac
@@ -775,7 +735,6 @@ add_or_update_account() {
 save_private_config() {
   local language_value="${1:-$(read_saved_language)}"
   local theme_value="${2:-$(read_saved_theme)}"
-  local history_tags_value="${3:-$(read_saved_history_tags)}"
   local temporary_file=""
   local index=0
 
@@ -786,9 +745,6 @@ save_private_config() {
     printf '# Auto Script for GitHub Setup and Push - private configuration\n'
     printf 'language: %s\n' "$language_value"
     printf 'display-theme: %s\n' "$theme_value"
-    if [ "$history_tags_value" = true ]; then
-      printf 'add-tags-to-historical-release: enabled\n'
-    fi
     printf '\n'
     printf '# GitHub accounts: one field per line, with a blank line between accounts.\n'
     while [ "$index" -lt "$ACCOUNT_COUNT" ]; do
@@ -810,12 +766,6 @@ save_private_config() {
     return 1
   fi
   return 0
-}
-
-save_history_tags_preference() {
-  local enabled="$1"
-
-  save_private_config "$(read_saved_language)" "$(read_saved_theme)" "$enabled"
 }
 
 write_accounts_to_private_config() {
@@ -1065,4 +1015,11 @@ select_account() {
   done
 }
 
+remove_retired_private_fields() {
+  if grep -q '^add-tags-to-historical-release:' "$PRIVATE_CONFIG_FILE" 2>/dev/null; then
+    save_private_config "$(read_saved_language)" "$(read_saved_theme)"
+  fi
+}
+
 load_accounts
+remove_retired_private_fields || exit 1

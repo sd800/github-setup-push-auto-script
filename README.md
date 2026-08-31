@@ -36,7 +36,8 @@ git-auto/
 |   |-- 30-workflow.sh
 |   |-- 40-history.sh
 |   |-- 50-update.sh
-|   `-- 60-menu.sh
+|   |-- 60-menu.sh
+|   `-- option.txt      technical switch configuration; currently empty
 |-- README.md
 |-- README_zh.md
 |-- CHANGELOG.md
@@ -117,13 +118,9 @@ email: alice@example.com
 
 Every field has its own line, and a blank line separates accounts. Each account has only a GitHub username and commit email. Commit display names are always derived from GitHub usernames.
 
-Historical-release version tags are disabled by default. Enabling them under Advanced features adds this optional line:
+`display-theme` remains in this private file because it is a multi-value preference rather than an on/off switch.
 
-```text
-add-tags-to-historical-release: enabled
-```
-
-Turning the setting off removes the entire line from `private/config.txt`.
+Persistent binary switches belong only in `src/option.txt`, using one stable technical label per line and an `enabled` or `disabled` value. This release has no persistent binary switches, so `src/option.txt` is intentionally empty. The file contains no user data or explanatory prose.
 
 The central engine creates `private/` with owner-only directory permissions and `config.txt` with owner-only file permissions. It writes changes atomically and never places private keys, passphrases, access tokens, or passwords in this file.
 
@@ -236,7 +233,7 @@ When archived releases lack a root `.gitignore`, the user can paste one shared s
 
 The flow checks for sensitive-looking and oversized files, displays `git log --oneline --reverse`, and verifies the selected GitHub identity before publishing. Reconstructed commit timestamps use reliable detected release dates by default. The user can decline; in that case, no historical dates are assigned and each commit keeps the local system time that Git records automatically when creating it.
 
-Matching lightweight `vX.Y.Z` tags are disabled by default. They can be enabled under Advanced features, appear on GitHub's Tags page, and do not change file contents. Replacing an existing remote `main` requires explicit confirmation and an exact `--force-with-lease`. No backup branch is created, and other remote branches are unchanged.
+Replacing an existing remote `main` requires explicit confirmation and an exact `--force-with-lease`. No backup branch is created, and other remote branches are unchanged. Historical reconstruction creates release commits only; it does not create or modify Git tags.
 
 After publishing, the flow offers to connect the rebuilt `main` to the existing, normally non-empty working directory. It never copies over, deletes, or replaces current project files. If that directory has no Git metadata, it runs `git init`; if it has unrelated local history, it explains the change and asks before reconnecting. A mixed reset moves the branch to rebuilt history while leaving every current file difference as an ordinary uncommitted change. The flow then installs `g.sh`, saves the owner/key/origin binding, and makes the next `./g.sh` run ready to commit and push the current work.
 
@@ -255,6 +252,7 @@ The interface uses plain text status labels and no emoji symbols.
 The engine writes only to locations required by the requested workflow:
 
 - `private/config.txt` for shared personal preferences and account metadata.
+- `src/option.txt` as the technical location for persistent binary switches; it is currently empty.
 - `~/.ssh` for GitHub SSH keys and configuration.
 - The selected repository's `.git/config` and `.git/info/exclude` for local binding and launcher exclusion.
 - Temporary directories for strict SSH wrappers and historical reconstruction.

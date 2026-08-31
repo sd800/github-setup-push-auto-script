@@ -23,7 +23,6 @@ HISTORY_MAX_FILE_BYTES=104857600
 HISTORY_GITIGNORE_CONTENT=""
 HISTORY_ADD_GITIGNORE=false
 HISTORY_WORK_DIRECTORY=""
-HISTORY_CREATE_TAGS=false
 HISTORY_REBUILD_DATES=true
 
 advanced_heading() {
@@ -902,7 +901,7 @@ history_show_paginated_list() {
   elif [ "$kind" = "skipped" ]; then
     count="$HISTORY_SKIPPED_COUNT"
   else
-    count="$HISTORY_CONFLICT_TAG_COUNT"
+    return 1
   fi
 
   page_count="$(paged_choice_page_count "$count")"
@@ -937,9 +936,6 @@ history_show_paginated_list() {
           ;;
         skipped)
           item="${HISTORY_SKIPPED_DIRECTORIES[$index]}"
-          ;;
-        *)
-          item="${HISTORY_CONFLICT_TAGS[$index]}"
           ;;
       esac
       label="$(paged_choice_label "$((index - start))")" || return 1
@@ -1290,9 +1286,6 @@ history_build_repository() {
       return 1
     fi
 
-    if [ "$HISTORY_CREATE_TAGS" = true ]; then
-      git -C "$work_directory" tag "v$version" || return 1
-    fi
     short_commit="$(git -C "$work_directory" rev-parse --short HEAD)"
     advanced_success \
       "Release $version created at $short_commit." \
@@ -1311,12 +1304,6 @@ history_commit_date_for_release() {
 }
 
 HISTORY_REMOTE_MAIN_OID=""
-HISTORY_NEW_TAGS=()
-HISTORY_NEW_TAG_COUNT=0
-HISTORY_CONFLICT_TAGS=()
-HISTORY_CONFLICT_TAG_REMOTE_OIDS=()
-HISTORY_CONFLICT_TAG_COUNT=0
-HISTORY_REPLACE_CONFLICTING_TAGS=false
 
 history_read_remote_main() {
   local output=""
@@ -1324,64 +1311,6 @@ history_read_remote_main() {
   HISTORY_REMOTE_MAIN_OID=""
   output="$(run_git_with_identity "$BOUND_IDENTITY_FILE" ls-remote --heads origin refs/heads/main 2>/dev/null)" || return 1
   HISTORY_REMOTE_MAIN_OID="$(printf '%s\n' "$output" | awk '$2 == "refs/heads/main" { print $1; exit }')"
-}
-
-history_collect_remote_tag_state() {
-  local output_file=""
-  local index=0
-  local tag=""
-  local local_oid=""
-  local remote_oid=""
-
-  HISTORY_NEW_TAGS=()
-  HISTORY_NEW_TAG_COUNT=0
-  HISTORY_CONFLICT_TAGS=()
-  HISTORY_CONFLICT_TAG_REMOTE_OIDS=()
-  HISTORY_CONFLICT_TAG_COUNT=0
-  [ "$HISTORY_CREATE_TAGS" = true ] || return 0
-
-  output_file="$(safe_mktemp_file "${TMPDIR:-/tmp}" "remote-tags")" || return 1
-  if ! run_git_with_identity "$BOUND_IDENTITY_FILE" ls-remote --tags origin > "$output_file" 2>/dev/null; then
-    rm -f "$output_file"
-    return 1
-  fi
-
-  while [ "$index" -lt "$HISTORY_RELEASE_COUNT" ]; do
-    tag="v${HISTORY_RELEASE_VERSIONS[$index]}"
-    local_oid="$(git -C "$GIT_ROOT" rev-parse "refs/tags/$tag")"
-    remote_oid="$(awk -v ref="refs/tags/$tag" '$2 == ref { print $1; exit }' "$output_file")"
-    if [ -z "$remote_oid" ]; then
-      HISTORY_NEW_TAGS[$HISTORY_NEW_TAG_COUNT]="$tag"
-      HISTORY_NEW_TAG_COUNT=$((HISTORY_NEW_TAG_COUNT + 1))
-    elif [ "$remote_oid" != "$local_oid" ]; then
-      HISTORY_CONFLICT_TAGS[$HISTORY_CONFLICT_TAG_COUNT]="$tag"
-      HISTORY_CONFLICT_TAG_REMOTE_OIDS[$HISTORY_CONFLICT_TAG_COUNT]="$remote_oid"
-      HISTORY_CONFLICT_TAG_COUNT=$((HISTORY_CONFLICT_TAG_COUNT + 1))
-    fi
-    index=$((index + 1))
-  done
-  rm -f "$output_file"
-}
-
-history_confirm_tag_conflicts() {
-  local index=0
-
-  HISTORY_REPLACE_CONFLICTING_TAGS=false
-  [ "$HISTORY_CONFLICT_TAG_COUNT" -gt 0 ] || return 0
-  advanced_heading "Existing version tags" "远端存在同名版本标签"
-  advanced_muted \
-    "These remote tags point to the old history:" \
-    "以下远端版本标签仍指向旧历史："
-  history_show_paginated_list tags || return 1
-  advanced_muted \
-    "Replacing them makes the tags match the rebuilt release commits. Declining leaves those existing tags unchanged." \
-    "选择替换后，这些标签会改为指向重建后的版本提交；选择不替换则保持现状。"
-  if advanced_prompt_yes_no \
-    "Replace these conflicting tags?" \
-    "把这些同名标签更新到重建后的提交吗？" \
-    "yes"; then
-    HISTORY_REPLACE_CONFLICTING_TAGS=true
-  fi
 }
 
 history_push_main_branch() {
@@ -1415,35 +1344,6 @@ history_push_main_branch() {
     origin main:main
 }
 
-history_push_tags() {
-  local index=0
-  local tag=""
-  local expected_oid=""
-  local push_arguments=(push)
-  local push_refspecs=()
-
-  [ "$HISTORY_CREATE_TAGS" = true ] || return 0
-  while [ "$index" -lt "$HISTORY_NEW_TAG_COUNT" ]; do
-    tag="${HISTORY_NEW_TAGS[$index]}"
-    push_refspecs+=("refs/tags/$tag:refs/tags/$tag")
-    index=$((index + 1))
-  done
-
-  if [ "$HISTORY_REPLACE_CONFLICTING_TAGS" = true ]; then
-    index=0
-    while [ "$index" -lt "$HISTORY_CONFLICT_TAG_COUNT" ]; do
-      tag="${HISTORY_CONFLICT_TAGS[$index]}"
-      expected_oid="${HISTORY_CONFLICT_TAG_REMOTE_OIDS[$index]}"
-      push_arguments+=("--force-with-lease=refs/tags/$tag:$expected_oid")
-      push_refspecs+=("refs/tags/$tag:refs/tags/$tag")
-      index=$((index + 1))
-    done
-  fi
-  [ "${#push_refspecs[@]}" -gt 0 ] || return 0
-  run_git_with_identity "$BOUND_IDENTITY_FILE" \
-    "${push_arguments[@]}" origin "${push_refspecs[@]}" >/dev/null
-}
-
 history_publish_repository() {
   local GIT_ROOT="$HISTORY_WORK_DIRECTORY"
   local push_status=0
@@ -1451,8 +1351,6 @@ history_publish_repository() {
   require_repository_account_match || return 1
   advanced_info "Reading the latest remote state..." "正在确认远端仓库是否发生变化……"
   history_read_remote_main || return 1
-  history_collect_remote_tag_state || return 1
-  history_confirm_tag_conflicts
 
   history_push_main_branch || push_status=$?
   if [ "$push_status" -eq 2 ]; then
@@ -1467,12 +1365,6 @@ history_publish_repository() {
     return 1
   fi
 
-  if ! history_push_tags; then
-    advanced_error \
-      "The main branch was uploaded, but one or more version tags failed. The temporary repository was kept for repair." \
-      "main 分支已经上传，但部分版本标签上传失败。临时仓库已保留，可用于补充处理。"
-    return 1
-  fi
   return 0
 }
 
@@ -1688,7 +1580,6 @@ run_historical_release_import() {
 
   reset_history_releases
   HISTORY_WORK_DIRECTORY=""
-  HISTORY_CREATE_TAGS="$(read_saved_history_tags)"
   HISTORY_REBUILD_DATES=true
 
   advanced_heading "Rebuild Git history from historical releases" "用历史版本文件夹重建 Git 历史"
@@ -1778,11 +1669,7 @@ Choose No: Do not assign historical dates; each commit keeps the local system ti
     advanced \
     "$BOUND_USERNAME" \
     "$CURRENT_REPOSITORY_OWNER" \
-    "$CURRENT_REPOSITORY_NAME" \
-    "$BOUND_USERNAME" \
-    "$BOUND_EMAIL" \
-    "$BOUND_IDENTITY_FILE" \
-    "$HISTORY_REMOTE_URL"
+    "$CURRENT_REPOSITORY_NAME"
   if [ "$HISTORY_REBUILD_DATES" = true ]; then
     advanced_muted \
       "Commit dates: each reliable detected release date is assigned; for a release without one, Git records the local system time at the moment that reconstructed commit is created." \
@@ -1791,15 +1678,6 @@ Choose No: Do not assign historical dates; each commit keeps the local system ti
     advanced_muted \
       "Commit dates: no historical dates are assigned; Git records the local system time at the moment each reconstructed commit is created." \
       "提交时间：不写入历史日期；每个提交保留 Git 创建它时自动记录的本机时间。"
-  fi
-  if [ "$HISTORY_CREATE_TAGS" = true ]; then
-    advanced_muted \
-      "Version tags: create a matching vX.Y.Z tag for every release." \
-      "版本标记：为每个版本创建对应的 vX.Y.Z 标签。"
-  else
-    advanced_muted \
-      "Version tags: disabled in Advanced features." \
-      "版本标记：高级功能中当前未开启。"
   fi
   if ! advanced_prompt_yes_no \
     "Build the temporary repository now without uploading it?" \
@@ -1886,36 +1764,6 @@ Choose No: Do not assign historical dates; each commit keeps the local system ti
   return 0
 }
 
-history_tags_setting_menu() {
-  local enabled=false
-
-  if advanced_prompt_yes_no \
-    "Create a matching vX.Y.Z tag for every rebuilt release?" \
-    "为每个版本创建对应的 vX.Y.Z 标签吗？" \
-    "no" \
-    "Version tags appear on GitHub's Tags page; they do not change file contents." \
-    "版本标记会显示在 GitHub 的 Tags 页面；不会改变文件内容。"; then
-    enabled=true
-  fi
-
-  if ! save_history_tags_preference "$enabled"; then
-    advanced_error \
-      "The historical-release tag setting could not be saved in private/config.txt." \
-      "无法把历史版本标签设置保存到 private/config.txt。"
-    return 1
-  fi
-
-  if [ "$enabled" = true ]; then
-    advanced_success \
-      "Version tags are enabled for future historical-release imports." \
-      "已开启历史版本标签；以后重建版本时会自动创建对应标签。"
-  else
-    advanced_success \
-      "Version tags are disabled. The setting was removed from private/config.txt." \
-      "已关闭历史版本标签；private/config.txt 中的对应设置已删除。"
-  fi
-}
-
 run_advanced_menu() {
   local choice=""
 
@@ -1925,25 +1773,15 @@ run_advanced_menu() {
     advanced_heading "Advanced features" "高级功能"
     if [ "$ADVANCED_LANGUAGE" = "en" ]; then
       printf '  1) Rebuild Git history from historical release folders\n'
-      if [ "$(read_saved_history_tags)" = true ]; then
-        printf '  2) Add version tags when rebuilding history: On\n'
-      else
-        printf '  2) Add version tags when rebuilding history: Off\n'
-      fi
-      printf '  3) Discover and import GitHub accounts through SSH\n'
-      printf '  4) Verify saved account SSH keys with GitHub\n'
-      printf '  5) Verify the current project with GitHub\n'
+      printf '  2) Discover and import GitHub accounts through SSH\n'
+      printf '  3) Verify saved account SSH keys with GitHub\n'
+      printf '  4) Verify the current project with GitHub\n'
       printf '  0) Return\n'
     else
       printf '  1) 用历史版本文件夹重建 Git 历史\n'
-      if [ "$(read_saved_history_tags)" = true ]; then
-        printf '  2) 重建历史时添加版本标记：已开启\n'
-      else
-        printf '  2) 重建历史时添加版本标记：已关闭\n'
-      fi
-      printf '  3) 通过 SSH 识别并导入现有 GitHub 账号\n'
-      printf '  4) 联网核对已保存账号的 SSH 密钥\n'
-      printf '  5) 联网核对当前项目\n'
+      printf '  2) 通过 SSH 识别并导入现有 GitHub 账号\n'
+      printf '  3) 联网核对已保存账号的 SSH 密钥\n'
+      printf '  4) 联网核对当前项目\n'
       printf '  0) 返回\n'
     fi
     choice="$(advanced_prompt_value "Choose" "选择" "1")" || return 1
@@ -1953,17 +1791,14 @@ run_advanced_menu() {
         advanced_pause
         ;;
       2)
-        history_tags_setting_menu || true
-        ;;
-      3)
         import_existing_accounts_online || true
         advanced_pause
         ;;
-      4)
+      3)
         check_private_accounts || true
         advanced_pause
         ;;
-      5)
+      4)
         verify_current_project_online || true
         advanced_pause
         ;;

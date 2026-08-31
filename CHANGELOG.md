@@ -6,6 +6,23 @@
 
 All notable changes to Auto Script for GitHub Setup and Push are documented in this file.
 
+## 3.7.1 - 2026-09-01
+
+### Changed
+
+- Added the tracked `src/option.txt` as the only location for future persistent binary switches. Its format is limited to stable technical labels with `enabled` or `disabled` values; it is intentionally empty because the current release has no persistent binary switches.
+- Kept interface language, the multi-value `display-theme` preference, and GitHub username/email records in the ignored `private/config.txt`.
+- Added automatic cleanup for the retired `add-tags-to-historical-release` field in existing private configurations without changing language, display mode, or account records.
+
+### Removed
+
+- Removed historical-release Git tags end to end, including the Advanced setting, local tag creation, remote tag inspection, conflict handling, and tag pushes. Historical reconstruction now creates only the ordered `Release X.Y.Z` commits; tags already present in an existing repository are not deleted or changed.
+- Removed the technical-details reveal feature and its `GIT_AUTO_DEBUG_DETAILS` environment switch. Destination summaries now always contain only the GitHub account followed by the repository.
+
+### Tests
+
+- Updated configuration, historical reconstruction, menu, and summary regression coverage for the empty option file and the complete removal of both retired features.
+
 ## 3.6.1 - 2026-09-01
 
 ### Changed

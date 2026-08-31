@@ -17,6 +17,7 @@ export HOME="$TEST_TEMPORARY/home"
 export NO_COLOR=1
 export GITHUB_AUTO_TESTING=1
 export GIT_AUTO_PRIVATE_DIRECTORY="$TEST_TEMPORARY/private"
+export GIT_AUTO_OPTION_FILE="$TEST_TEMPORARY/option.txt"
 mkdir -p "$HOME/.ssh/config.d"
 
 # shellcheck source=../git-auto.sh
@@ -626,16 +627,14 @@ test_private_configuration() {
   local original_advanced_language="${ADVANCED_LANGUAGE:-en}"
   local engine_checksum_before=""
   local engine_checksum_after=""
-  local tag_setting_output=""
 
-  engine_checksum_before="$(cksum "$PROJECT_DIRECTORY/git-auto.sh" "$PROJECT_DIRECTORY"/src/*.sh | cksum)"
+  engine_checksum_before="$(cksum "$PROJECT_DIRECTORY/git-auto.sh" "$PROJECT_DIRECTORY"/src/*.sh "$PROJECT_DIRECTORY/src/option.txt" | cksum)"
   PRIVATE_DIRECTORY="$config_root/private"
   PRIVATE_CONFIG_FILE="$PRIVATE_DIRECTORY/config.txt"
   ensure_private_config
   load_accounts
 
   assert_equal "" "$(read_saved_language)" "new private config starts without a saved language"
-  assert_equal "false" "$(read_saved_history_tags)" "historical-release tags default to disabled"
   if choose_interface_language no >/dev/null 2>&1 <<< "2"; then
     assert_equal "zh" "$(read_saved_language)" "first language choice is written into private config"
   else
@@ -653,24 +652,10 @@ test_private_configuration() {
     fail_test "preferences create no application config directory"
   fi
 
-  ADVANCED_LANGUAGE="zh"
-  tag_setting_output="$(history_tags_setting_menu <<< "y")"
-  assert_equal "true" "$(read_saved_history_tags)" "enabling historical-release tags saves the preference"
-  if grep -Fxq 'add-tags-to-historical-release: enabled' "$PRIVATE_CONFIG_FILE" &&
-     grep -Fq '为每个版本创建对应的 vX.Y.Z 标签吗？' <<< "$tag_setting_output" &&
-     grep -Fq '版本标记会显示在 GitHub 的 Tags 页面；不会改变文件内容。' <<< "$tag_setting_output" &&
-     grep -Fq '[是(y)/否(n)，默认否]:' <<< "$tag_setting_output"; then
-    pass "enabled historical-release tag setting uses the documented field and explanation"
+  if [ -f "$GIT_AUTO_OPTION_FILE" ] && [ ! -s "$GIT_AUTO_OPTION_FILE" ]; then
+    pass "option file remains empty while no persistent switches exist"
   else
-    fail_test "enabled historical-release tag setting uses the documented field and explanation"
-  fi
-
-  tag_setting_output="$(history_tags_setting_menu <<< "")"
-  assert_equal "false" "$(read_saved_history_tags)" "the tag setting prompt defaults to disabled"
-  if ! grep -Fq 'add-tags-to-historical-release:' "$PRIVATE_CONFIG_FILE"; then
-    pass "disabling historical-release tags removes the private config field"
-  else
-    fail_test "disabling historical-release tags removes the private config field"
+    fail_test "option file remains empty while no persistent switches exist"
   fi
 
   add_or_update_account "test-user" "test-user@example.com"
@@ -687,7 +672,16 @@ test_private_configuration() {
     fail_test "private account fields remain human-editable"
   fi
 
-  engine_checksum_after="$(cksum "$PROJECT_DIRECTORY/git-auto.sh" "$PROJECT_DIRECTORY"/src/*.sh | cksum)"
+  printf 'add-tags-to-historical-release: enabled\n' >> "$PRIVATE_CONFIG_FILE"
+  load_accounts
+  remove_retired_private_fields
+  if ! grep -Fq 'add-tags-to-historical-release:' "$PRIVATE_CONFIG_FILE"; then
+    pass "retired historical-tag setting is removed from private config"
+  else
+    fail_test "retired historical-tag setting is removed from private config"
+  fi
+
+  engine_checksum_after="$(cksum "$PROJECT_DIRECTORY/git-auto.sh" "$PROJECT_DIRECTORY"/src/*.sh "$PROJECT_DIRECTORY/src/option.txt" | cksum)"
   assert_equal "$engine_checksum_before" "$engine_checksum_after" "saving private settings never modifies the dispatcher or source modules"
 
   PRIVATE_DIRECTORY="$original_private_directory"
@@ -720,6 +714,12 @@ test_central_distribution() {
     pass "private is ignored by the public repository"
   else
     fail_test "private is ignored by the public repository"
+  fi
+
+  if [ -f "$PROJECT_DIRECTORY/src/option.txt" ] && [ ! -s "$PROJECT_DIRECTORY/src/option.txt" ]; then
+    pass "tracked option file is empty while no persistent switches exist"
+  else
+    fail_test "tracked option file is empty while no persistent switches exist"
   fi
 
   if [ ! -e "$PROJECT_DIRECTORY/dist" ] && [ -f "$PROJECT_DIRECTORY/g.sh" ]; then
@@ -1314,12 +1314,10 @@ test_historical_release_import() {
   local working_directory="$TEST_TEMPORARY/active-working-directory"
   local divergent_directory="$TEST_TEMPORARY/divergent-working-directory"
   local messages=""
+  local first_commit=""
   local first_tree=""
   local final_tree=""
   local saved_prompt_function=""
-  local saved_run_git_with_identity=""
-  local tag_push_arguments="$TEST_TEMPORARY/tag-push-arguments"
-  local tag_push_calls=0
   local remote_head=""
   local local_head=""
   local head_count=""
@@ -1429,7 +1427,6 @@ test_historical_release_import() {
   HISTORY_ADD_GITIGNORE=true
   HISTORY_GITIGNORE_CONTENT="*.tmp
 .cache/"
-  HISTORY_CREATE_TAGS=true
   ADVANCED_LANGUAGE="en"
 
   if history_build_repository; then
@@ -1442,11 +1439,15 @@ test_historical_release_import() {
   messages="$(git -C "$HISTORY_WORK_DIRECTORY" log --format=%s --reverse | paste -sd '|' -)"
   assert_equal "Release 1.0.0|Release 2.0.0" "$messages" "creates one ordered release commit per complete snapshot"
   assert_equal "main" "$(git -C "$HISTORY_WORK_DIRECTORY" branch --show-current)" "normalizes rebuilt history to the main branch"
-  assert_true "creates a version tag for the first release" git -C "$HISTORY_WORK_DIRECTORY" rev-parse -q --verify refs/tags/v1.0.0
-  assert_true "creates a version tag for the latest release" git -C "$HISTORY_WORK_DIRECTORY" rev-parse -q --verify refs/tags/v2.0.0
+  if [ -z "$(git -C "$HISTORY_WORK_DIRECTORY" tag --list)" ]; then
+    pass "historical reconstruction creates no version tags"
+  else
+    fail_test "historical reconstruction creates no version tags"
+  fi
   assert_equal "2024-01-02" "$(git -C "$HISTORY_WORK_DIRECTORY" log --reverse --format=%cs | sed -n '1p')" "preserves a reliable release date"
 
-  first_tree="$(git -C "$HISTORY_WORK_DIRECTORY" ls-tree -r --name-only refs/tags/v1.0.0)"
+  first_commit="$(git -C "$HISTORY_WORK_DIRECTORY" rev-list --reverse main | sed -n '1p')"
+  first_tree="$(git -C "$HISTORY_WORK_DIRECTORY" ls-tree -r --name-only "$first_commit")"
   final_tree="$(git -C "$HISTORY_WORK_DIRECTORY" ls-tree -r --name-only HEAD)"
   if printf '%s\n' "$first_tree" | grep -Fxq '.gitignore' &&
      printf '%s\n' "$first_tree" | grep -Fxq 'debug.log'; then
@@ -1467,31 +1468,6 @@ test_historical_release_import() {
   else
     fail_test "historical source folders remain unchanged"
   fi
-
-  saved_run_git_with_identity="$(declare -f run_git_with_identity)"
-  run_git_with_identity() {
-    local ignored_key="$1"
-    shift
-    tag_push_calls=$((tag_push_calls + 1))
-    printf '%s\n' "$*" > "$tag_push_arguments"
-    [ -n "$ignored_key" ]
-  }
-  HISTORY_NEW_TAGS=(v1.0.0 v2.0.0)
-  HISTORY_NEW_TAG_COUNT=2
-  HISTORY_CONFLICT_TAGS=(v3.0.0)
-  HISTORY_CONFLICT_TAG_REMOTE_OIDS=(1111111111111111111111111111111111111111)
-  HISTORY_CONFLICT_TAG_COUNT=1
-  HISTORY_REPLACE_CONFLICTING_TAGS=true
-  history_push_tags
-  assert_equal "1" "$tag_push_calls" "historical version tags use one batched push"
-  if grep -Fq 'push --force-with-lease=refs/tags/v3.0.0:1111111111111111111111111111111111111111 origin refs/tags/v1.0.0:refs/tags/v1.0.0 refs/tags/v2.0.0:refs/tags/v2.0.0 refs/tags/v3.0.0:refs/tags/v3.0.0' "$tag_push_arguments"; then
-    pass "batched tag push keeps conflict leases before the remote"
-  else
-    fail_test "batched tag push keeps conflict leases before the remote"
-  fi
-  eval "$saved_run_git_with_identity"
-  HISTORY_CREATE_TAGS=true
-  HISTORY_REPLACE_CONFLICTING_TAGS=false
 
   if history_publish_repository; then
     remote_head="$(git --git-dir="$remote" rev-parse refs/heads/main)"
@@ -1560,7 +1536,6 @@ test_historical_release_import() {
         "$(git -C "$HISTORY_WORK_DIRECTORY" rev-parse 'HEAD^{tree}')"
   )"
   git -C "$HISTORY_WORK_DIRECTORY" update-ref refs/heads/main "$unrelated_commit"
-  HISTORY_CREATE_TAGS=false
   if history_publish_repository; then
     remote_head="$(git --git-dir="$remote" rev-parse refs/heads/main)"
     local_head="$(git -C "$HISTORY_WORK_DIRECTORY" rev-parse main)"
@@ -1676,10 +1651,8 @@ test_paged_account_selection() {
   paged_choice_to_index "2" 1 "$ACCOUNT_COUNT"
   assert_equal "23" "$PAGED_CHOICE_INDEX" "page-relative labels select the matching overflow item"
 
-  unset GIT_AUTO_DEBUG_DETAILS
   github_target_summary \
-    normal account-one owner-name repository-name author-name author@example.com \
-    "$TEST_TEMPORARY/private-key" 'git@github-account:owner-name/repository-name.git' main \
+    normal account-one owner-name repository-name \
     > "$detail_output"
   assert_equal "GitHub account: account-one" "$(sed -n '1p' "$detail_output")" \
     "normal destination summary shows the account first"
@@ -1691,22 +1664,6 @@ test_paged_account_selection() {
     fail_test "normal destination summary hides technical identity and transport details"
   fi
 
-  GIT_AUTO_DEBUG_DETAILS=1
-  github_target_summary \
-    normal account-one owner-name repository-name author-name author@example.com \
-    "$TEST_TEMPORARY/private-key" 'git@github-account:owner-name/repository-name.git' main \
-    > "$detail_output"
-  if grep -Fq 'Commit author name: author-name' "$detail_output" &&
-     grep -Fq 'Commit email: author@example.com' "$detail_output" &&
-     grep -Fq 'SSH private key:' "$detail_output" &&
-     grep -Fq 'Push address:' "$detail_output" &&
-     grep -Fq 'Local branch: main' "$detail_output"; then
-    pass "diagnostic interface restores technical destination details"
-  else
-    fail_test "diagnostic interface restores technical destination details"
-  fi
-  unset GIT_AUTO_DEBUG_DETAILS
-
 }
 
 test_project_release_policy() {
@@ -1715,7 +1672,7 @@ test_project_release_policy() {
 
   english_version="$(sed -nE 's/^## ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' "$PROJECT_DIRECTORY/CHANGELOG.md" | sed -n '1p')"
   chinese_version="$(sed -nE 's/^## ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' "$PROJECT_DIRECTORY/CHANGELOG_zh.md" | sed -n '1p')"
-  assert_equal "3.6.1" "$english_version" "English changelog declares release 3.6.1"
+  assert_equal "3.6.2" "$english_version" "English changelog declares release 3.6.2"
   assert_equal "$english_version" "$chinese_version" "English and Chinese changelogs declare the same release"
   if [[ "$english_version" != *4* ]] &&
      [[ "$english_version" =~ ^[1-9][0-9]*\.[1-9][0-9]*\.[1-9][0-9]*$ ]]; then
@@ -1827,6 +1784,15 @@ test_user_interface_symbols() {
     pass "ordinary setup and the lightweight launcher avoid optional network and directory-wide discovery"
   else
     fail_test "ordinary setup and the lightweight launcher avoid optional network and directory-wide discovery"
+  fi
+
+  if ! grep -Fq 'GIT_AUTO_DEBUG_DETAILS' "$script_file" &&
+     ! grep -Fq 'history_tags_setting_menu' "$script_file" &&
+     ! grep -Fq 'ls-remote --tags' "$script_file" &&
+     ! grep -Fq 'refs/tags/' "$script_file"; then
+    pass "technical-details and historical-tag features are absent from the program"
+  else
+    fail_test "technical-details and historical-tag features are absent from the program"
   fi
 
   if grep -Fq 'Fast, convenient, and simple is also the implementation rule.' "$PROJECT_DIRECTORY/README.md" &&
