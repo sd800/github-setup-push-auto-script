@@ -6,6 +6,8 @@
 
 Auto Script for GitHub Setup and Push is a centralized Bash utility for anyone who wants a shorter, safer path from local changes to a verified GitHub push. A small `git-auto.sh` dispatcher loads the central implementation from `src/`, while each project uses the same small `g.sh` interface.
 
+Fast, convenient, and simple is the product rule. A routine push stays routine; guided setup appears only when information is missing or has changed.
+
 The everyday interface stays deliberately small:
 
 - `./g.sh`: Detect the current Git repository, verify its GitHub account and destination, review changes, commit, and push.
@@ -141,9 +143,9 @@ The default workflow follows the state of the project:
 3. Stop before changing files when HEAD is detached, merge conflicts remain, or a merge, rebase, cherry-pick, or revert is unfinished.
 4. Read `origin` to determine the exact GitHub `owner/repository`. Ask for a repository address only when `origin` does not identify one.
 5. Use only the account whose username matches the repository owner. A mismatched saved account, default `github.com` key, or earlier account choice is ignored and corrected; if the owner account has not been configured, request only its commit email and finish its SSH setup.
-6. Show the owner account followed by the destination repository, check the endpoint with that account's verified key, then save the repository-local settings. The script explains that this read-only response is not a separate proof of push permission; `git push` provides the final permission check.
-7. Show `git status --short` before staging. The user can accept the suggested commit message, replace it, or enter `:cancel`. Only after that decision does the script run `git add -A`.
-8. Create the commit, show what it contains, and push the current branch with the one verified key. Ordinary pushes never use force.
+6. When the owner account, SSH alias, exact key, fetch URL, and push URL are already bound correctly, take the direct path: run `git add -A`, create `Release X.Y.Z` automatically when changes exist, and run `git push`. Push is the only GitHub connection in this path.
+7. Use the longer verification and review flow only for first-time setup, missing or changed bindings, username changes, and repository changes.
+8. If push fails, keep the local commit and explain whether GitHub reported divergent history, an identity or repository rejection, a connection problem, or another exact Git error. Ordinary pushes never use force.
 
 A clean repository creates no unnecessary commit. An empty repository with no project files stops without attempting a push. Canceling at the commit prompt happens before `git add -A` and preserves any changes that were already staged.
 
@@ -200,7 +202,9 @@ Username changes reuse the existing key, create a collision-safe username-based 
 
 ## Commit messages and release versions
 
-Every real commit remains user-confirmed. The engine shows the working-tree status and proposes a message before it stages all changes. A detected release version always produces `Release X.Y.Z`, including when the repository has no earlier commit; `Initial commit` is used only when that first snapshot has no detectable version. After confirmation the script runs `git add -A`, shows the staged summary, and creates the commit.
+For an established project, `./g.sh` intentionally behaves like the shortest manual workflow: `git add -A`, `git commit -m "Release X.Y.Z"` when changes exist, then `git push`. The version message is detected automatically and no commit prompt interrupts this direct path. With no working-tree changes, the script skips commit and goes directly to push.
+
+First-time setup and changed or incomplete bindings still show the working-tree review and ask for commit confirmation. A detected release version always takes priority, including when the repository has no earlier commit; `Initial commit` is used only when that first snapshot has no detectable version.
 
 For every commit, including the first one, release versions are discovered in this order:
 
@@ -260,7 +264,7 @@ Run the isolated test suite with:
 ./tests/test.sh
 ```
 
-Tests use temporary home folders, private profiles, Git repositories, SSH configuration, and simulated SSH transport. They do not use the real private profile or modify real GitHub repositories.
+Tests use temporary home folders, private profiles, Git repositories, SSH configuration, and simulated SSH transport. They cover the direct push path, full setup, account isolation, versioned commits, and push-failure explanations without using the real private profile or modifying real GitHub repositories.
 
 ## License
 

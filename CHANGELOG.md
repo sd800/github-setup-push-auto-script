@@ -6,6 +6,27 @@
 
 All notable changes to Auto Script for GitHub Setup and Push are documented in this file.
 
+## 3.5.1 - 2026-08-31
+
+### Changed
+
+- Established the core product rule: fast, convenient, and simple. Routine pushes must not be turned into guided setup unless required information is missing or changed.
+- Reduced established-project `./g.sh` runs to the practical equivalent of `git add -A`, an automatic version-derived `git commit -m "Release X.Y.Z"` when changes exist, and `git push`.
+- Added a local fast-path check for the saved owner, SSH alias, exact key, fetch destination, and push destination. A valid binding skips repeated `ssh -T`, `git ls-remote`, commit-message prompts, configuration rewrites, status explanations, and staged summaries; push is the only GitHub connection.
+- Kept the complete guided verification flow for first-time setup and changed, incomplete, or inconsistent bindings.
+- Added an eight-second SSH connection timeout with one connection attempt so an unreachable network fails promptly.
+- Push failures now preserve and mention the local commit, show Git's exact output, and provide localized explanations for non-fast-forward history, rejected identity or repository access, and connection failures.
+
+### Fixed
+
+- Restored the tracked, copy-ready root `g.sh` launcher that was omitted from the migrated repository snapshot.
+- Corrected fast-path state and push-exit-status tests so they verify the parent shell state and the exact failed push result.
+- Confirmed that rerunning `./g.sh` with a clean working tree still proceeds to `git push`, allowing an earlier connection failure to be retried without recreating the commit.
+
+### Tests
+
+- Added regression coverage for the no-preflight fast path, SSH timeout, automatic established-project behavior, clean-tree push continuation, and English and Chinese push-failure explanations.
+
 ## 3.3.1 - 2026-08-31
 
 ### Changed

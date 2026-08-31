@@ -318,7 +318,8 @@ test_git_binding_and_commit() {
 
   create_pinned_ssh_wrapper
   if grep -Fq 'IdentitiesOnly=yes' "$PINNED_SSH_WRAPPER" &&
-     grep -Fq 'GITHUB_AUTO_IDENTITY_FILE' "$PINNED_SSH_WRAPPER"; then
+     grep -Fq 'GITHUB_AUTO_IDENTITY_FILE' "$PINNED_SSH_WRAPPER" &&
+     grep -Fq 'ConnectTimeout=8' "$PINNED_SSH_WRAPPER"; then
     pass "pinned SSH wrapper forces one identity"
   else
     fail_test "pinned SSH wrapper forces one identity"
@@ -1004,9 +1005,22 @@ test_origin_alias_identity_selection() {
 
 test_repository_owner_account_enforcement() {
   local repository="$TEST_TEMPORARY/repository-owner-enforcement"
+  local fake_ssh_directory="$TEST_TEMPORARY/repository-owner-ssh"
+  local owner_key="$fake_ssh_directory/id_ed25519_github-sd800"
   local original_root="${GIT_ROOT:-}"
   local original_language="$UI_LANGUAGE"
+  local original_ssh_directory="$SSH_DIRECTORY"
+  local original_ssh_config="$SSH_CONFIG_FILE"
+  local original_project_binding_reused="${PROJECT_BINDING_REUSED:-false}"
+  local saved_ensure_bound_identity=""
+  local saved_verify_repository_access=""
+  local saved_prompt_commit_message=""
   local output=""
+  local output_file="$TEST_TEMPORARY/repository-owner-fast-path-output"
+  local message=""
+  local identity_checks=0
+  local repository_checks=0
+  local commit_prompt_checks=0
 
   mkdir -p "$repository"
   git -C "$repository" init -q
@@ -1038,8 +1052,78 @@ test_repository_owner_account_enforcement() {
     pass "binding refuses an account that differs from the repository owner"
   fi
 
+  mkdir -p "$fake_ssh_directory"
+  : > "$owner_key"
+  printf 'Host github-sd800\n    HostName github.com\n    User git\n    IdentityFile %s\n    IdentitiesOnly yes\n' \
+    "$owner_key" > "$fake_ssh_directory/config"
+  SSH_DIRECTORY="$fake_ssh_directory"
+  SSH_CONFIG_FILE="$fake_ssh_directory/config"
+  BOUND_USERNAME="sd800"
+  BOUND_EMAIL="sd800@example.com"
+  BOUND_SSH_ALIAS="github-sd800"
+  BOUND_IDENTITY_FILE="$owner_key"
+  save_project_binding
+
+  saved_ensure_bound_identity="$(declare -f ensure_bound_identity)"
+  saved_verify_repository_access="$(declare -f verify_repository_access)"
+  ensure_bound_identity() {
+    identity_checks=$((identity_checks + 1))
+    return 1
+  }
+  verify_repository_access() {
+    repository_checks=$((repository_checks + 1))
+    return 1
+  }
+  PROJECT_BINDING_REUSED=false
+  configure_project > "$output_file" 2>&1
+  output="$(< "$output_file")"
+  assert_equal "true" "$PROJECT_BINDING_REUSED" "established owner binding enables the direct push path"
+  assert_equal "0|0" "$identity_checks|$repository_checks" "direct push skips repeated SSH identity and ls-remote checks"
+  if printf '%s\n' "$output" | grep -Fq 'directly to add, commit, and push'; then
+    pass "direct push explains the simplified established-project flow"
+  else
+    fail_test "direct push explains the simplified established-project flow"
+  fi
+  eval "$saved_ensure_bound_identity"
+  eval "$saved_verify_repository_access"
+
+  saved_prompt_commit_message="$(declare -f prompt_commit_message)"
+  prompt_commit_message() {
+    commit_prompt_checks=$((commit_prompt_checks + 1))
+    return 1
+  }
+  write_changelog "$repository/CHANGELOG.md" "9.1.1" "8.9.9"
+  prepare_and_commit > "$output_file" 2>&1
+  message="$(git -C "$repository" log -1 --pretty=%s)"
+  assert_equal "Release 9.1.1" "$message" "established project uses the detected release without a commit prompt"
+  assert_equal "0" "$commit_prompt_checks" "established project does not ask for a commit message"
+  if prepare_and_commit > "$output_file" 2>&1; then
+    pass "a clean established project continues to the push stage"
+  else
+    fail_test "a clean established project continues to the push stage"
+  fi
+  eval "$saved_prompt_commit_message"
+
+  UI_LANGUAGE="en"
+  output="$(explain_push_failure 'rejected: non-fast-forward' main 2>&1)"
+  if printf '%s\n' "$output" | grep -Fq 'GitHub has commits on main'; then
+    pass "push failure explains a non-fast-forward rejection"
+  else
+    fail_test "push failure explains a non-fast-forward rejection"
+  fi
+  UI_LANGUAGE="zh"
+  output="$(explain_push_failure 'ssh: connect to host github.com port 22: Connection timed out' main 2>&1)"
+  if printf '%s\n' "$output" | grep -Fq '网络不可用或连接中断'; then
+    pass "push failure explains a transient connection problem in Chinese"
+  else
+    fail_test "push failure explains a transient connection problem in Chinese"
+  fi
+
   GIT_ROOT="$original_root"
   UI_LANGUAGE="$original_language"
+  SSH_DIRECTORY="$original_ssh_directory"
+  SSH_CONFIG_FILE="$original_ssh_config"
+  PROJECT_BINDING_REUSED="$original_project_binding_reused"
 }
 
 test_commit_cancellation_boundary() {
@@ -1501,7 +1585,7 @@ test_project_release_policy() {
 
   english_version="$(sed -nE 's/^## ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' "$PROJECT_DIRECTORY/CHANGELOG.md" | sed -n '1p')"
   chinese_version="$(sed -nE 's/^## ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' "$PROJECT_DIRECTORY/CHANGELOG_zh.md" | sed -n '1p')"
-  assert_equal "3.3.1" "$english_version" "English changelog declares release 3.3.1"
+  assert_equal "3.5.1" "$english_version" "English changelog declares release 3.5.1"
   assert_equal "$english_version" "$chinese_version" "English and Chinese changelogs declare the same release"
   if [[ "$english_version" != *4* ]] &&
      [[ "$english_version" =~ ^[1-9][0-9]*\.[1-9][0-9]*\.[1-9][0-9]*$ ]]; then
