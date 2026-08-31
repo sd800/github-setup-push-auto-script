@@ -1017,6 +1017,7 @@ identify_key_username() {
   local username=""
 
   VERIFIED_GITHUB_USERNAME=""
+  SSH_VERIFICATION_OUTPUT=""
 
   if [ ! -f "$private_key" ]; then
     return 1
@@ -1056,11 +1057,13 @@ verify_key_matches_username() {
   local private_key="$1"
   local expected_username="$2"
 
-  info "Confirming the GitHub account..." "正在确认 GitHub 账号……"
+  info \
+    "Asking GitHub which account accepts this exact SSH private key; saved account and repository settings will not be changed." \
+    "正在用这把指定的 SSH 私钥向 GitHub 核对账号；这一步不会修改已保存账号或仓库设置。"
   if ! identify_key_username "$private_key"; then
     error_message \
-      "GitHub did not accept this account key." \
-      "GitHub 没有接受这个账号的密钥。"
+      "GitHub did not accept the private key $(human_path "$private_key") for SSH authentication." \
+      "GitHub 没有接受私钥 $(human_path "$private_key") 的 SSH 身份验证。"
     if [ -n "${SSH_VERIFICATION_OUTPUT:-}" ]; then
       muted "${SSH_VERIFICATION_OUTPUT##*$'\n'}"
     fi
@@ -1075,13 +1078,15 @@ verify_key_matches_username() {
   fi
 
   success \
-    "GitHub account confirmed: $VERIFIED_GITHUB_USERNAME" \
-    "已确认 GitHub 账号：$VERIFIED_GITHUB_USERNAME"
+    "GitHub confirmed that this key belongs to account $VERIFIED_GITHUB_USERNAME." \
+    "GitHub 已确认这把密钥属于账号 ${VERIFIED_GITHUB_USERNAME}。"
   return 0
 }
 
 FOUND_SSH_ALIAS=""
 FOUND_IDENTITY_FILE=""
+FOUND_UNVERIFIED_SSH_ALIAS=""
+FOUND_UNVERIFIED_IDENTITY_FILE=""
 
 find_verified_identity_for_username() {
   local username="$1"
@@ -1090,9 +1095,13 @@ find_verified_identity_for_username() {
   local key=""
   local index=0
   local passes=0
+  local canonical_key=""
+  local checked_keys="|"
 
   FOUND_SSH_ALIAS=""
   FOUND_IDENTITY_FILE=""
+  FOUND_UNVERIFIED_SSH_ALIAS=""
+  FOUND_UNVERIFIED_IDENTITY_FILE=""
 
   scan_ssh_aliases || return 1
 
@@ -1124,6 +1133,14 @@ find_verified_identity_for_username() {
       ssh_alias_is_github "$alias" || continue
       key="$(resolve_alias_identity_file "$alias" || true)"
       [ -f "$key" ] || continue
+      canonical_key="$(canonical_existing_file "$key" || true)"
+      [ -n "$canonical_key" ] || continue
+      case "$checked_keys" in
+        *"|$canonical_key|"*)
+          continue
+          ;;
+      esac
+      checked_keys="${checked_keys}${canonical_key}|"
 
       if identify_key_username "$key" &&
          [ "$(lowercase "$VERIFIED_GITHUB_USERNAME")" = "$(lowercase "$username")" ]; then
@@ -1131,8 +1148,54 @@ find_verified_identity_for_username() {
         FOUND_IDENTITY_FILE="$key"
         return 0
       fi
+      if [ -z "$VERIFIED_GITHUB_USERNAME" ] &&
+         [ -z "$FOUND_UNVERIFIED_IDENTITY_FILE" ]; then
+        FOUND_UNVERIFIED_SSH_ALIAS="$alias"
+        FOUND_UNVERIFIED_IDENTITY_FILE="$key"
+      fi
     done
     passes=$((passes + 1))
+  done
+
+  return 1
+}
+
+find_github_alias_for_identity_file() {
+  local identity_file="$1"
+  local preferred_alias="${2:-}"
+  local canonical_identity=""
+  local canonical_candidate=""
+  local alias=""
+  local candidate_key=""
+  local index=0
+  local pass=0
+
+  FOUND_SSH_ALIAS=""
+  canonical_identity="$(canonical_existing_file "$identity_file" || true)"
+  [ -n "$canonical_identity" ] || return 1
+  scan_ssh_aliases || return 1
+
+  while [ "$pass" -lt 2 ]; do
+    index=0
+    while [ "$index" -lt "$DISCOVERED_SSH_ALIAS_COUNT" ]; do
+      alias="${DISCOVERED_SSH_ALIASES[$index]}"
+      index=$((index + 1))
+
+      if [ "$pass" -eq 0 ]; then
+        [ -n "$preferred_alias" ] &&
+          [ "$(lowercase "$alias")" = "$(lowercase "$preferred_alias")" ] || continue
+      fi
+
+      ssh_alias_is_github "$alias" || continue
+      candidate_key="$(resolve_alias_identity_file "$alias" || true)"
+      canonical_candidate="$(canonical_existing_file "$candidate_key" || true)"
+      if [ -n "$canonical_candidate" ] &&
+         [ "$canonical_candidate" = "$canonical_identity" ]; then
+        FOUND_SSH_ALIAS="$alias"
+        return 0
+      fi
+    done
+    pass=$((pass + 1))
   done
 
   return 1
@@ -1302,17 +1365,20 @@ create_new_identity() {
 
   ensure_ssh_storage
   next_available_alias "$username" || fail \
-    "A safe SSH connection name could not be selected." \
-    "无法选择安全可用的 SSH 连接名称。"
+    "An unused SSH Host name and key filename could not be selected." \
+    "无法为新密钥找到不冲突的 SSH 主机名和文件名。"
 
-  heading "Create a secure connection" "创建安全连接"
-  muted "Account: $username" "账号：$username"
+  heading "Create a GitHub SSH key" "创建 GitHub SSH 密钥"
+  muted "GitHub account: $username" "GitHub 账号：$username"
   muted \
-    "Local key: $(human_path "$NEW_IDENTITY_FILE")" \
-    "本地密钥：$(human_path "$NEW_IDENTITY_FILE")"
+    "New private key: $(human_path "$NEW_IDENTITY_FILE")" \
+    "新私钥位置：$(human_path "$NEW_IDENTITY_FILE")"
   muted \
-    "You may protect the key with a passphrase. Press Enter to leave it without one." \
-    "接下来可以为密钥设置密码；直接按 Enter 表示不设置。"
+    "New SSH Host entry: $NEW_SSH_ALIAS -> github.com" \
+    "将写入 SSH 主机配置：$NEW_SSH_ALIAS -> github.com"
+  muted \
+    "ssh-keygen will ask for an optional key passphrase twice. Press Enter twice to create the key without a passphrase." \
+    "接下来 ssh-keygen 会连续两次询问密钥口令；如果不需要口令，请连续按两次 Enter。"
 
   if ! ssh-keygen -t ed25519 -C "$email" -f "$NEW_IDENTITY_FILE"; then
     fail "The key was not created." "密钥创建未完成。"
@@ -1324,7 +1390,7 @@ create_new_identity() {
   try_add_key_to_agent "$NEW_IDENTITY_FILE"
 
   public_key="${NEW_IDENTITY_FILE}.pub"
-  heading "Add the key to GitHub" "添加到 GitHub"
+  heading "Add the public key to the correct GitHub account" "把公钥添加到正确的 GitHub 账号"
   if copy_public_key "$public_key"; then
     success "The public key was copied to the clipboard." "公钥已复制到剪贴板。"
   else
@@ -1357,13 +1423,19 @@ create_new_identity() {
     warn \
       "Make sure the public key was added to the correct GitHub account." \
       "请确认公钥添加到了正确的 GitHub 账号。"
-    if ! ui_prompt_yes_no "Check again after fixing it?" "处理好后重新验证？" "yes"; then
+    if ! ui_prompt_yes_no \
+      "Verify the same key with GitHub again?" \
+      "完成检查后，要再次用同一把密钥向 GitHub 核对账号吗？" \
+      "yes"; then
       return 1
     fi
   done
 
   FOUND_SSH_ALIAS="$NEW_SSH_ALIAS"
   FOUND_IDENTITY_FILE="$NEW_IDENTITY_FILE"
+  success \
+    "GitHub confirmed that the new key belongs to account $username." \
+    "GitHub 已确认这把新密钥属于账号 ${username}。"
   return 0
 }
 
@@ -1390,6 +1462,8 @@ verified_identity_index() {
 discover_verified_github_identities() {
   local alias=""
   local key=""
+  local canonical_key=""
+  local checked_keys="|"
   local index=0
 
   VERIFIED_IDENTITY_USERNAMES=()
@@ -1411,10 +1485,18 @@ discover_verified_github_identities() {
     ssh_alias_is_github "$alias" || continue
     key="$(resolve_alias_identity_file "$alias" || true)"
     [ -f "$key" ] || continue
+    canonical_key="$(canonical_existing_file "$key" || true)"
+    [ -n "$canonical_key" ] || continue
+    case "$checked_keys" in
+      *"|$canonical_key|"*)
+        continue
+        ;;
+    esac
+    checked_keys="${checked_keys}${canonical_key}|"
 
     muted \
-      "Checking an existing GitHub connection..." \
-      "正在检查一个已有的 GitHub 连接……"
+      "Asking GitHub which account accepts key $(human_path "$key") from SSH Host $alias; saved account and repository settings will not be changed." \
+      "正在核对 SSH 主机名 $alias 指定的密钥 $(human_path "$key") 对应哪个 GitHub 账号；这一步不会修改已保存账号或仓库设置。"
     if identify_key_username "$key"; then
       if ! verified_identity_index "$VERIFIED_GITHUB_USERNAME" >/dev/null 2>&1; then
         VERIFIED_IDENTITY_USERNAMES[$VERIFIED_IDENTITY_COUNT]="$VERIFIED_GITHUB_USERNAME"
@@ -1430,8 +1512,8 @@ discover_verified_github_identities() {
 
   if [ "$VERIFIED_IDENTITY_COUNT" -eq 0 ]; then
     muted \
-      "No ready-to-use GitHub account was found." \
-      "没有发现可以直接使用的 GitHub 账号。"
+      "GitHub did not accept any SSH private key referenced by the scanned SSH configuration." \
+      "在已扫描的 SSH 配置中，GitHub 没有接受其中引用的任何私钥。"
   fi
 }
 
@@ -1502,8 +1584,11 @@ prompt_github_username() {
   local username=""
 
   while true; do
-    username="$(ui_prompt_value "GitHub username" "GitHub 用户名")" || return 1
+    username="$(ui_prompt_value "GitHub username, or :cancel to stop" "GitHub 用户名；如需停止，请输入 :cancel")" || return 1
     username="$(lowercase "$username")"
+    if [ "$username" = ":cancel" ]; then
+      return 2
+    fi
     if valid_github_username "$username"; then
       printf '%s' "$username"
       return 0
@@ -1528,13 +1613,16 @@ register_account_and_identity() {
   FOUND_SSH_ALIAS="$alias"
   FOUND_IDENTITY_FILE="$private_key"
 
-  success "Account $username is ready." "账号 $username 已准备好。"
+  success \
+    "Saved account $username and its commit email after GitHub verified the SSH key." \
+    "GitHub 核对 SSH 密钥成功后，已保存账号 $username 及其提交邮箱。"
 }
 
 setup_or_reuse_account() {
   local username="$1"
   local email="$2"
   local identity_index=""
+  local detail=""
 
   if identity_index="$(verified_identity_index "$username")"; then
     register_account_and_identity \
@@ -1548,6 +1636,51 @@ setup_or_reuse_account() {
   if find_verified_identity_for_username "$username"; then
     register_account_and_identity "$username" "$email" "$FOUND_SSH_ALIAS" "$FOUND_IDENTITY_FILE"
     return 0
+  fi
+
+  if [ -n "$FOUND_UNVERIFIED_IDENTITY_FILE" ]; then
+    warn \
+      "The existing key $(human_path "$FOUND_UNVERIFIED_IDENTITY_FILE") could not be confirmed for account $username." \
+      "暂时无法确认现有密钥 $(human_path "$FOUND_UNVERIFIED_IDENTITY_FILE") 是否属于账号 ${username}。"
+    detail="${SSH_VERIFICATION_OUTPUT##*$'\n'}"
+    if [ -n "$detail" ]; then
+      muted "SSH result: $detail" "SSH 返回信息：$detail"
+    fi
+    muted \
+      "This can mean the network cannot reach GitHub, or that the key has not been added to this account." \
+      "这通常表示当前网络无法连接 GitHub，或这把密钥的公钥尚未添加到该账号。"
+    if ui_prompt_yes_no \
+      "Verify this existing key again before creating another key?" \
+      "要先重新验证这把现有密钥，再决定是否新建密钥吗？" \
+      "yes"; then
+      if identify_key_username "$FOUND_UNVERIFIED_IDENTITY_FILE" &&
+         [ "$(lowercase "$VERIFIED_GITHUB_USERNAME")" = "$(lowercase "$username")" ]; then
+        register_account_and_identity \
+          "$username" \
+          "$email" \
+          "$FOUND_UNVERIFIED_SSH_ALIAS" \
+          "$FOUND_UNVERIFIED_IDENTITY_FILE"
+        return 0
+      fi
+      warn \
+        "GitHub still did not confirm this key for account $username." \
+        "GitHub 仍未确认这把密钥属于账号 ${username}。"
+    fi
+  fi
+
+  next_available_alias "$username" || return 1
+  heading "Create a separate SSH key" "创建独立的 SSH 密钥"
+  muted \
+    "If you continue, the script will create $(human_path "$NEW_IDENTITY_FILE") and add SSH Host $NEW_SSH_ALIAS to ~/.ssh/config. Existing keys and Host entries will not be replaced." \
+    "如果继续，脚本会创建 $(human_path "$NEW_IDENTITY_FILE")，并在 ~/.ssh/config 中加入 SSH 主机名 ${NEW_SSH_ALIAS}；现有密钥和主机配置不会被替换。"
+  if ! ui_prompt_yes_no \
+    "Create and configure this key for account $username now?" \
+    "现在为账号 $username 创建并配置这把密钥吗？" \
+    "yes"; then
+    warn \
+      "Stopped before creating a key or saving account $username." \
+      "操作已停止；没有创建新密钥，也没有保存账号 ${username}。"
+    return 1
   fi
 
   if create_new_identity "$username" "$email"; then
@@ -1569,8 +1702,8 @@ run_account_setup() {
 
   heading "Add a GitHub account" "添加 GitHub 账号"
   muted \
-    "Existing accounts already configured on this computer will be reused when possible." \
-    "脚本会优先复用这台电脑上已经配置好的账号。"
+    "The script first checks SSH keys already referenced by ~/.ssh/config and reuses a key only when GitHub confirms its exact username." \
+    "脚本会先检查 ~/.ssh/config 中已经引用的密钥；只有 GitHub 返回的用户名完全一致时，才会沿用现有密钥。"
 
   discover_verified_github_identities || true
 
@@ -1578,8 +1711,8 @@ run_account_setup() {
     username="${VERIFIED_IDENTITY_USERNAMES[$index]}"
     if ! account_index "$username" >/dev/null 2>&1; then
       if ui_prompt_yes_no \
-        "Account ${username} was found. Add it to this script?" \
-        "发现 GitHub 账号 ${username}，要添加到这个脚本吗？" \
+        "Save account $username and its commit email in private/config.txt, and reuse its verified SSH key?" \
+        "要把账号 $username 和提交邮箱保存到 private/config.txt，并沿用刚刚验证通过的 SSH 密钥吗？" \
         "yes"; then
         email="$(prompt_account_email "$username")" || return 1
         add_or_update_account "$username" "$email"
@@ -1596,19 +1729,37 @@ run_account_setup() {
   if [ "$imported" = true ]; then
     write_accounts_to_private_config
     success \
-      "The discovered GitHub account was saved." \
-      "发现的 GitHub 账号已经保存。"
+      "Saved the selected existing GitHub account and commit email in private/config.txt." \
+      "已把选中的现有 GitHub 账号和提交邮箱保存到 private/config.txt。"
     return 0
   fi
 
-  username="$(prompt_github_username)" || return 1
+  muted \
+    "To add a different account, enter its GitHub username. You can also enter :cancel to leave account setup without changing a project." \
+    "如需添加其他账号，请输入对应的 GitHub 用户名；也可以输入 :cancel 退出账号设置，当前项目不会因此发生变化。"
+  username="$(prompt_github_username)"
+  case "$?" in
+    0)
+      ;;
+    2)
+      warn \
+        "Account setup canceled. No project was committed or pushed." \
+        "已退出账号设置；没有提交或上传任何项目。"
+      return 2
+      ;;
+    *)
+      return 1
+      ;;
+  esac
   email="$(prompt_account_email "$username")" || return 1
 
   if setup_or_reuse_account "$username" "$email"; then
     return 0
   fi
 
-  fail "Account setup was not completed." "账号设置未完成。"
+  fail \
+    "The account was not saved because SSH key verification did not finish. Any key created during this attempt remains in ~/.ssh, but no project was committed or pushed." \
+    "由于 SSH 密钥验证没有完成，本次没有保存账号。过程中已经创建的密钥会保留在 ~/.ssh 中，但没有提交或上传任何项目。"
 }
 
 # -----------------------------------------------------------------------------
@@ -1701,7 +1852,9 @@ parse_repository_input() {
     host="${host%%:*}"
     path="${value#*/}"
     github_host_or_alias "$host" || return 1
-  elif [[ "$value_lc" == http://* ]] || [[ "$value_lc" == https://* ]]; then
+  elif [[ "$value_lc" == http://* ]] ||
+       [[ "$value_lc" == https://* ]] ||
+       [[ "$value_lc" == git://* ]]; then
     value="${value#*://}"
     authority="${value%%/*}"
     [ "$authority" != "$value" ] || return 1
@@ -1752,7 +1905,7 @@ parse_repository_input() {
 prompt_repository() {
   local input=""
 
-  heading "Connect a GitHub repository" "连接 GitHub 仓库"
+  heading "Identify the GitHub repository" "指定对应的 GitHub 仓库"
   muted \
     "Paste owner/repository, a GitHub page URL, an HTTPS URL, or an SSH URL." \
     "可以粘贴 owner/repository、GitHub 网页地址、HTTPS 地址或 SSH 地址。"
@@ -2380,6 +2533,13 @@ resolve_release_version() {
 # -----------------------------------------------------------------------------
 
 GIT_ROOT=""
+PROJECT_GIT_STATE=""
+CURRENT_BRANCH=""
+CURRENT_ORIGIN_URL=""
+CURRENT_ORIGIN_HOST=""
+ORIGIN_VERIFIED_USERNAME=""
+ORIGIN_VERIFIED_ALIAS=""
+ORIGIN_VERIFIED_IDENTITY_FILE=""
 CURRENT_REPOSITORY_OWNER=""
 CURRENT_REPOSITORY_NAME=""
 BOUND_USERNAME=""
@@ -2404,13 +2564,6 @@ require_core_commands() {
   fi
 }
 
-remember_engine_location() {
-  git -C "$GIT_ROOT" config --local github-auto.engine "$ENGINE_PATH" ||
-    fail \
-      "The central engine location could not be saved in this project." \
-      "无法在当前项目中保存中央脚本位置。"
-}
-
 locate_project() {
   local initialize="${1:-yes}"
   local existing_root=""
@@ -2422,11 +2575,11 @@ locate_project() {
     # directory objects instead of their displayed path strings.
     if [ ! "$existing_root" -ef "$SCRIPT_DIRECTORY" ]; then
       fail \
-        "$SCRIPT_NAME is inside another Git repository. Place it in the project root." \
-        "$SCRIPT_NAME 位于另一个 Git 仓库内部，请把它放到项目根目录。"
+        "$SCRIPT_NAME is in $(human_path "$SCRIPT_DIRECTORY"), but the Git repository root is $(human_path "$existing_root"). Place $SCRIPT_NAME in that repository root before running it." \
+        "$SCRIPT_NAME 位于 $(human_path "$SCRIPT_DIRECTORY")，但这个 Git 仓库的根目录是 $(human_path "$existing_root")。请把 $SCRIPT_NAME 放到该仓库根目录后再运行。"
     fi
     GIT_ROOT="$existing_root"
-    remember_engine_location
+    PROJECT_GIT_STATE="existing"
     return 0
   fi
 
@@ -2434,15 +2587,84 @@ locate_project() {
     return 1
   fi
 
-  info "Initializing the current project..." "正在初始化当前项目……"
+  heading "Prepare the local Git repository" "准备本地 Git 仓库"
+  warn \
+    "No Git repository exists at $(human_path "$SCRIPT_DIRECTORY")." \
+    "$(human_path "$SCRIPT_DIRECTORY") 还不是 Git 仓库。"
+  muted \
+    "The script will run git init in this folder. This creates local .git metadata only; it does not create a GitHub repository or upload files." \
+    "接下来只会在这个文件夹中执行 git init，创建本地 .git 记录；此时不会创建 GitHub 仓库，也不会上传文件。"
   if ! git -C "$SCRIPT_DIRECTORY" init >/dev/null; then
     fail "The Git project could not be initialized." "Git 项目初始化失败。"
   fi
   GIT_ROOT="$SCRIPT_DIRECTORY"
-  remember_engine_location
+  PROJECT_GIT_STATE="initialized"
   success \
-    "The current folder is now a Git project." \
-    "当前文件夹已经初始化为 Git 项目。"
+    "Created the local Git repository: $(human_path "$GIT_ROOT")" \
+    "已创建本地 Git 仓库：$(human_path "$GIT_ROOT")"
+}
+
+git_operation_in_progress() {
+  local git_directory=""
+  local state_name=""
+
+  git_directory="$(git -C "$GIT_ROOT" rev-parse --absolute-git-dir 2>/dev/null || true)"
+  [ -n "$git_directory" ] || return 1
+  for state_name in MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD; do
+    [ -e "$git_directory/$state_name" ] && return 0
+  done
+  for state_name in rebase-merge rebase-apply; do
+    [ -d "$git_directory/$state_name" ] && return 0
+  done
+  return 1
+}
+
+describe_and_validate_project_state() {
+  local unmerged=""
+
+  CURRENT_BRANCH="$(git -C "$GIT_ROOT" branch --show-current 2>/dev/null || true)"
+  heading "Current local project" "当前本地项目"
+
+  if [ "$PROJECT_GIT_STATE" = "existing" ]; then
+    success \
+      "Existing Git repository detected: $(human_path "$GIT_ROOT")" \
+      "已识别现有 Git 仓库：$(human_path "$GIT_ROOT")"
+    muted \
+      "git init will not run again. Existing commits, branches, staged changes, and remotes will be preserved." \
+      "不会再次执行 git init；现有提交记录、分支、暂存内容和远端设置都会保留。"
+  else
+    success \
+      "Using the Git repository just created in $(human_path "$GIT_ROOT")." \
+      "将使用刚刚在 $(human_path "$GIT_ROOT") 创建的 Git 仓库。"
+  fi
+
+  if [ -n "$CURRENT_BRANCH" ]; then
+    muted "Current branch: $CURRENT_BRANCH" "当前分支：$CURRENT_BRANCH"
+  elif git -C "$GIT_ROOT" rev-parse --verify HEAD >/dev/null 2>&1; then
+    error_message \
+      "HEAD is detached, so there is no current branch to push. Check out the intended branch and run ./$SCRIPT_NAME again." \
+      "当前处于 detached HEAD 状态，没有可直接上传的当前分支。请先切换到目标分支，再重新运行 ./${SCRIPT_NAME}。"
+    return 1
+  else
+    muted \
+      "This repository has no commits yet; the first branch will be named main." \
+      "这个仓库还没有提交记录；首次提交后分支名将统一为 main。"
+  fi
+
+  unmerged="$(git -C "$GIT_ROOT" diff --name-only --diff-filter=U 2>/dev/null || true)"
+  if [ -n "$unmerged" ]; then
+    error_message \
+      "Unresolved merge conflicts were found. Resolve the files listed by git status before running this script." \
+      "检测到尚未解决的合并冲突。请先按照 git status 列出的文件完成处理，再运行本脚本。"
+    git -C "$GIT_ROOT" status --short
+    return 1
+  fi
+  if git_operation_in_progress; then
+    error_message \
+      "A merge, rebase, cherry-pick, or revert is still in progress. Finish or cancel that Git operation before running this script." \
+      "当前还有尚未完成的 merge、rebase、cherry-pick 或 revert。请先完成或取消该 Git 操作，再运行本脚本。"
+    return 1
+  fi
 }
 
 ensure_script_excluded() {
@@ -2452,6 +2674,12 @@ ensure_script_excluded() {
   local skipping=false
   local marker_start="# >>> github-auto script >>>"
   local marker_end="# <<< github-auto script <<<"
+
+  # The public launcher in the central repository is intentionally tracked.
+  # Only standalone project copies belong in the repository-local exclude file.
+  if git -C "$GIT_ROOT" ls-files --error-unmatch -- "$SCRIPT_NAME" >/dev/null 2>&1; then
+    return 0
+  fi
 
   exclude_file="$(git -C "$GIT_ROOT" rev-parse --git-path info/exclude)"
   case "$exclude_file" in
@@ -2466,6 +2694,11 @@ ensure_script_excluded() {
     "The local Git exclusion settings could not be prepared." \
     "无法准备 Git 本地排除设置。"
   [ -f "$exclude_file" ] || : > "$exclude_file"
+  if grep -Fqx "$marker_start" "$exclude_file" 2>/dev/null &&
+     grep -Fqx "/$SCRIPT_NAME" "$exclude_file" 2>/dev/null &&
+     grep -Fqx "$marker_end" "$exclude_file" 2>/dev/null; then
+    return 0
+  fi
   temporary_file="$(safe_mktemp_file "$(dirname "$exclude_file")" "exclude")" ||
     fail \
       "The local Git exclusion settings could not be updated." \
@@ -2492,12 +2725,14 @@ ensure_script_excluded() {
   mv "$temporary_file" "$exclude_file" || fail \
     "The local Git exclusion settings could not be saved." \
     "无法保存 Git 本地排除设置。"
-
 }
 
 read_origin_repository() {
   local url=""
 
+  ORIGIN_VERIFIED_USERNAME=""
+  ORIGIN_VERIFIED_ALIAS=""
+  ORIGIN_VERIFIED_IDENTITY_FILE=""
   if ! url="$(git -C "$GIT_ROOT" remote get-url origin 2>/dev/null)"; then
     return 1
   fi
@@ -2505,8 +2740,76 @@ read_origin_repository() {
     return 1
   fi
 
+  CURRENT_ORIGIN_URL="$url"
+  CURRENT_ORIGIN_HOST="$REPOSITORY_INPUT_HOST"
   CURRENT_REPOSITORY_OWNER="$REPOSITORY_OWNER"
   CURRENT_REPOSITORY_NAME="$REPOSITORY_NAME"
+  return 0
+}
+
+identify_origin_ssh_account() {
+  local key=""
+
+  [ -n "$CURRENT_ORIGIN_HOST" ] || return 1
+  ssh_alias_is_github "$CURRENT_ORIGIN_HOST" || return 1
+  key="$(resolve_alias_identity_file "$CURRENT_ORIGIN_HOST" || true)"
+  [ -f "$key" ] || return 1
+
+  info \
+    "The existing origin uses SSH Host $CURRENT_ORIGIN_HOST. Asking GitHub which account accepts its key; saved account and repository settings will not be changed." \
+    "现有 origin 使用 SSH 主机名 ${CURRENT_ORIGIN_HOST}。正在向 GitHub 核对该主机名所用密钥对应的账号；这一步不会修改已保存账号或仓库设置。"
+  if ! identify_key_username "$key"; then
+    warn \
+      "GitHub did not confirm the key currently referenced by origin SSH Host $CURRENT_ORIGIN_HOST." \
+      "GitHub 暂时没有确认 origin 的 SSH 主机名 ${CURRENT_ORIGIN_HOST} 所引用的密钥。"
+    if [ -n "${SSH_VERIFICATION_OUTPUT:-}" ]; then
+      muted \
+        "SSH result: ${SSH_VERIFICATION_OUTPUT##*$'\n'}" \
+        "SSH 返回信息：${SSH_VERIFICATION_OUTPUT##*$'\n'}"
+    fi
+    return 1
+  fi
+
+  ORIGIN_VERIFIED_USERNAME="$VERIFIED_GITHUB_USERNAME"
+  ORIGIN_VERIFIED_ALIAS="$CURRENT_ORIGIN_HOST"
+  ORIGIN_VERIFIED_IDENTITY_FILE="$key"
+  return 0
+}
+
+select_verified_origin_account() {
+  local allow_registration="${1:-yes}"
+  local index=""
+  local email=""
+
+  if [ -z "$ORIGIN_VERIFIED_USERNAME" ]; then
+    identify_origin_ssh_account || return 1
+  fi
+
+  if index="$(account_index "$ORIGIN_VERIFIED_USERNAME")"; then
+    BOUND_USERNAME="${ACCOUNT_USERNAMES[$index]}"
+    BOUND_EMAIL="${ACCOUNT_EMAILS[$index]}"
+    info \
+      "The existing origin authenticates as saved account $BOUND_USERNAME, so that account was selected." \
+      "现有 origin 使用的密钥已验证为已保存账号 ${BOUND_USERNAME}，因此本次直接使用该账号。"
+    return 0
+  fi
+
+  [ "$allow_registration" = "yes" ] || return 1
+  heading "Use the account already connected to this repository" "使用当前仓库已经连接的账号"
+  success \
+    "GitHub confirmed that origin SSH Host $ORIGIN_VERIFIED_ALIAS authenticates as $ORIGIN_VERIFIED_USERNAME." \
+    "GitHub 已确认 origin 的 SSH 主机名 ${ORIGIN_VERIFIED_ALIAS} 使用账号 ${ORIGIN_VERIFIED_USERNAME}。"
+  muted \
+    "Only the commit email is still needed. The existing SSH key will be reused, and Git will not be initialized again." \
+    "现在只需确认提交邮箱。脚本会继续使用现有 SSH 密钥，也不会重新初始化 Git 仓库。"
+  email="$(prompt_account_email "$ORIGIN_VERIFIED_USERNAME")" || return 1
+  register_account_and_identity \
+    "$ORIGIN_VERIFIED_USERNAME" \
+    "$email" \
+    "$ORIGIN_VERIFIED_ALIAS" \
+    "$ORIGIN_VERIFIED_IDENTITY_FILE"
+  BOUND_USERNAME="$SELECTED_USERNAME"
+  BOUND_EMAIL="$SELECTED_EMAIL"
   return 0
 }
 
@@ -2519,6 +2822,9 @@ select_account_for_repository() {
   if [ -n "$preferred_username" ] && index="$(account_index "$preferred_username")"; then
     BOUND_USERNAME="${ACCOUNT_USERNAMES[$index]}"
     BOUND_EMAIL="${ACCOUNT_EMAILS[$index]}"
+    info \
+      "Using the account selected for this command: $BOUND_USERNAME" \
+      "本次操作使用指定账号：$BOUND_USERNAME"
     return 0
   fi
 
@@ -2526,12 +2832,22 @@ select_account_for_repository() {
   if [ -n "$saved_username" ] && index="$(account_index "$saved_username")"; then
     BOUND_USERNAME="${ACCOUNT_USERNAMES[$index]}"
     BOUND_EMAIL="${ACCOUNT_EMAILS[$index]}"
+    info \
+      "Using this repository's saved GitHub account: $BOUND_USERNAME" \
+      "使用当前仓库已经保存的 GitHub 账号：$BOUND_USERNAME"
+    return 0
+  fi
+
+  if select_verified_origin_account yes; then
     return 0
   fi
 
   if index="$(account_index "$owner")"; then
     BOUND_USERNAME="${ACCOUNT_USERNAMES[$index]}"
     BOUND_EMAIL="${ACCOUNT_EMAILS[$index]}"
+    info \
+      "The repository owner matches saved account $BOUND_USERNAME, so that account was selected." \
+      "仓库所属用户名与已保存账号 $BOUND_USERNAME 一致，因此本次使用该账号。"
     return 0
   fi
 
@@ -2547,18 +2863,58 @@ select_account_for_repository() {
 ensure_bound_identity() {
   local preferred_alias=""
   local saved_key=""
+  local verification_detail=""
 
   preferred_alias="$(git -C "$GIT_ROOT" config --local --get github-auto.ssh-alias 2>/dev/null || true)"
   saved_key="$(git -C "$GIT_ROOT" config --local --get github-auto.identity-file 2>/dev/null || true)"
+  saved_key="$(expand_home_path "$saved_key")"
+  saved_key="${saved_key//%d/${HOME:-}}"
+
+  if [ -n "$ORIGIN_VERIFIED_USERNAME" ] &&
+     [ "$(lowercase "$ORIGIN_VERIFIED_USERNAME")" = "$(lowercase "$BOUND_USERNAME")" ] &&
+     [ -f "$ORIGIN_VERIFIED_IDENTITY_FILE" ]; then
+    BOUND_SSH_ALIAS="$ORIGIN_VERIFIED_ALIAS"
+    BOUND_IDENTITY_FILE="$ORIGIN_VERIFIED_IDENTITY_FILE"
+    success \
+      "Using the origin identity GitHub already confirmed: account $BOUND_USERNAME, SSH Host $BOUND_SSH_ALIAS, key $(human_path "$BOUND_IDENTITY_FILE")." \
+      "将使用刚刚由 GitHub 确认的 origin 身份：账号 ${BOUND_USERNAME}、SSH 主机名 ${BOUND_SSH_ALIAS}、密钥 $(human_path "$BOUND_IDENTITY_FILE")。"
+    return 0
+  fi
+
+  if [ -z "$preferred_alias" ] && [ -n "$CURRENT_ORIGIN_HOST" ]; then
+    case "$(lowercase "$CURRENT_ORIGIN_HOST")" in
+      github.com|www.github.com|ssh.github.com)
+        ;;
+      *)
+        if ssh_alias_is_github "$CURRENT_ORIGIN_HOST"; then
+          preferred_alias="$CURRENT_ORIGIN_HOST"
+          info \
+            "The existing origin uses SSH Host $preferred_alias; that existing key will be checked first." \
+            "现有 origin 使用 SSH 主机名 ${preferred_alias}，将优先核对它指定的现有密钥。"
+        fi
+        ;;
+    esac
+  fi
 
   if [ -n "$saved_key" ] && [ -f "$saved_key" ]; then
     if identify_key_username "$saved_key" &&
        [ "$(lowercase "$VERIFIED_GITHUB_USERNAME")" = "$(lowercase "$BOUND_USERNAME")" ]; then
       BOUND_IDENTITY_FILE="$saved_key"
-      BOUND_SSH_ALIAS="$preferred_alias"
-      if [ -z "$BOUND_SSH_ALIAS" ]; then
-        BOUND_SSH_ALIAS="github-$(lowercase "$BOUND_USERNAME")"
+      if find_github_alias_for_identity_file "$saved_key" "$preferred_alias"; then
+        BOUND_SSH_ALIAS="$FOUND_SSH_ALIAS"
+      else
+        next_available_alias "$BOUND_USERNAME" || fail \
+          "An unused SSH Host name could not be selected for this repository's existing key." \
+          "无法为当前仓库已有的密钥找到不冲突的 SSH 主机名。"
+        BOUND_SSH_ALIAS="$NEW_SSH_ALIAS"
+        info \
+          "The saved key has no usable GitHub SSH Host entry. Adding $BOUND_SSH_ALIAS to ~/.ssh/config for this existing key." \
+          "当前仓库保存的密钥还没有可用的 GitHub SSH 主机配置。将把 ${BOUND_SSH_ALIAS} 添加到 ~/.ssh/config，并继续使用这把现有密钥。"
+        install_ssh_alias_block "$BOUND_USERNAME" "$BOUND_SSH_ALIAS" "$BOUND_IDENTITY_FILE"
       fi
+      success \
+        "GitHub confirmed that this repository uses account $BOUND_USERNAME through SSH Host $BOUND_SSH_ALIAS and key $(human_path "$BOUND_IDENTITY_FILE")." \
+        "GitHub 已确认当前仓库通过 SSH 主机名 ${BOUND_SSH_ALIAS} 和密钥 $(human_path "$BOUND_IDENTITY_FILE") 使用账号 ${BOUND_USERNAME}。"
       return 0
     fi
   fi
@@ -2566,13 +2922,63 @@ ensure_bound_identity() {
   if find_verified_identity_for_username "$BOUND_USERNAME" "$preferred_alias"; then
     BOUND_SSH_ALIAS="$FOUND_SSH_ALIAS"
     BOUND_IDENTITY_FILE="$FOUND_IDENTITY_FILE"
+    success \
+      "Reusing SSH Host $BOUND_SSH_ALIAS and key $(human_path "$BOUND_IDENTITY_FILE") for account $BOUND_USERNAME." \
+      "将沿用账号 ${BOUND_USERNAME} 已有的 SSH 配置：主机名 ${BOUND_SSH_ALIAS}，密钥 $(human_path "$BOUND_IDENTITY_FILE")。"
     return 0
   fi
 
-  warn \
-    "Account $BOUND_USERNAME does not have a ready secure connection." \
-    "账号 $BOUND_USERNAME 还没有可用的安全连接。"
-  if ! ui_prompt_yes_no "Set it up automatically now?" "现在自动设置？" "yes"; then
+  heading "GitHub SSH identity" "核对 GitHub SSH 身份"
+  if [ -n "$FOUND_UNVERIFIED_IDENTITY_FILE" ]; then
+    warn \
+      "An existing key was found at $(human_path "$FOUND_UNVERIFIED_IDENTITY_FILE"), but GitHub did not confirm it for account $BOUND_USERNAME." \
+      "找到了现有密钥 $(human_path "$FOUND_UNVERIFIED_IDENTITY_FILE")，但暂时无法确认它属于 GitHub 账号 ${BOUND_USERNAME}。"
+    verification_detail="${SSH_VERIFICATION_OUTPUT##*$'\n'}"
+    if [ -n "$verification_detail" ]; then
+      muted "SSH result: $verification_detail" "SSH 返回信息：$verification_detail"
+    fi
+    muted \
+      "This can mean the network cannot reach GitHub, or that this public key is not registered with the account." \
+      "这通常表示当前网络无法连接 GitHub，或这把密钥的公钥尚未添加到该账号。"
+    if ui_prompt_yes_no \
+      "Verify this existing key with GitHub again before creating anything?" \
+      "要先重新验证这把现有密钥，再决定是否创建新密钥吗？" \
+      "yes"; then
+      if identify_key_username "$FOUND_UNVERIFIED_IDENTITY_FILE" &&
+         [ "$(lowercase "$VERIFIED_GITHUB_USERNAME")" = "$(lowercase "$BOUND_USERNAME")" ]; then
+        BOUND_SSH_ALIAS="$FOUND_UNVERIFIED_SSH_ALIAS"
+        BOUND_IDENTITY_FILE="$FOUND_UNVERIFIED_IDENTITY_FILE"
+        success \
+          "GitHub confirmed that the existing key belongs to account $BOUND_USERNAME." \
+          "GitHub 已确认这把现有密钥属于账号 ${BOUND_USERNAME}。"
+        return 0
+      fi
+      warn \
+        "GitHub still did not confirm this key for account $BOUND_USERNAME." \
+        "GitHub 仍未确认这把密钥属于账号 ${BOUND_USERNAME}。"
+    fi
+  else
+    warn \
+      "No SSH private key accepted by GitHub for account $BOUND_USERNAME was found in ~/.ssh/config or its Include files." \
+      "在 ~/.ssh/config 及其 Include 文件中，没有找到可由 GitHub 确认为账号 $BOUND_USERNAME 的现有私钥。"
+  fi
+
+  next_available_alias "$BOUND_USERNAME" || fail \
+    "An unused SSH Host name and key filename could not be selected." \
+    "无法为新密钥找到不冲突的 SSH 主机名和文件名。"
+  muted \
+    "Continuing will create $(human_path "$NEW_IDENTITY_FILE") and add SSH Host $NEW_SSH_ALIAS to ~/.ssh/config." \
+    "如果继续，脚本将创建 $(human_path "$NEW_IDENTITY_FILE")，并在 ~/.ssh/config 中加入 SSH 主机名 ${NEW_SSH_ALIAS}。"
+  muted \
+    "The public key will be shown for you to add to GitHub. No commit or push will run until GitHub confirms that the key belongs to exactly $BOUND_USERNAME." \
+    "随后会显示公钥，供你添加到 GitHub。只有 GitHub 确认该密钥对应的账号正是 $BOUND_USERNAME 后，脚本才会继续提交和上传。"
+  if ! ui_prompt_yes_no \
+    "Create and configure this separate SSH key now?" \
+    "现在创建并配置这把独立的 SSH 密钥吗？" \
+    "yes"; then
+    warn \
+      "Stopped before creating a key, changing the repository's account settings, committing, or pushing." \
+      "操作已停止；没有创建新密钥，也没有修改当前仓库的账号设置、提交或上传。"
     return 1
   fi
 
@@ -2594,6 +3000,7 @@ save_project_binding() {
   git -C "$GIT_ROOT" config --local github-auto.username "$BOUND_USERNAME" || return 1
   git -C "$GIT_ROOT" config --local github-auto.ssh-alias "$BOUND_SSH_ALIAS" || return 1
   git -C "$GIT_ROOT" config --local github-auto.identity-file "$BOUND_IDENTITY_FILE" || return 1
+  git -C "$GIT_ROOT" config --local github-auto.engine "$ENGINE_PATH" || return 1
 
   if git -C "$GIT_ROOT" remote get-url origin >/dev/null 2>&1; then
     git -C "$GIT_ROOT" remote set-url origin "$remote_url" || return 1
@@ -2641,28 +3048,39 @@ run_git_with_identity() {
 verify_repository_access() {
   local retry="${1:-yes}"
   local target="${2:-origin}"
+  local output=""
+  local detail=""
 
   while true; do
-    info "Confirming repository access..." "正在确认仓库访问权限……"
-    if run_git_with_identity "$BOUND_IDENTITY_FILE" ls-remote "$target" HEAD >/dev/null 2>&1; then
+    info \
+      "Reading ${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME} with account $BOUND_USERNAME; this check does not upload or change the repository." \
+      "正在用账号 $BOUND_USERNAME 读取 ${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME} 的远端信息；这一步不会上传或修改仓库。"
+    output="$(run_git_with_identity "$BOUND_IDENTITY_FILE" ls-remote "$target" HEAD 2>&1)" && {
       success \
-        "The account and repository access are confirmed." \
-        "账号和仓库访问权限均已确认。"
+        "GitHub allowed account $BOUND_USERNAME to read ${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME}." \
+        "GitHub 已允许账号 $BOUND_USERNAME 读取 ${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME}。"
       return 0
-    fi
+    }
 
     error_message \
-      "Account $BOUND_USERNAME cannot access ${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME} yet." \
-      "账号 $BOUND_USERNAME 目前还无法访问 ${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME}。"
+      "GitHub did not allow account $BOUND_USERNAME to read ${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME}." \
+      "GitHub 未允许账号 $BOUND_USERNAME 读取 ${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME}。"
+    detail="${output##*$'\n'}"
+    if [ -n "$detail" ]; then
+      muted "Git result: $detail" "Git 返回信息：$detail"
+    fi
     muted \
-      "Make sure the repository exists on GitHub and this account has access." \
-      "请确认仓库已经在 GitHub 创建，并且当前账号拥有访问权限。"
+      "Check the network, confirm that the repository exists, and confirm that this exact account has access." \
+      "请检查网络，并确认仓库确实存在且这个账号拥有访问权限。"
     muted \
       "Create a repository: https://github.com/new" \
       "创建仓库：https://github.com/new"
 
     if [ "$retry" != "yes" ] ||
-       ! ui_prompt_yes_no "Check again after fixing it?" "处理好后重新检查？" "yes"; then
+       ! ui_prompt_yes_no \
+         "Run the same read-only access check again?" \
+         "要再次执行同一项只读访问检查吗？" \
+         "yes"; then
       return 1
     fi
   done
@@ -2673,13 +3091,24 @@ configure_project() {
   local proposed_remote_url=""
 
   if read_origin_repository; then
-    :
+    success \
+      "Recognized the existing origin as ${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME}." \
+      "已从现有 origin 识别出 GitHub 仓库：${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME}。"
+    muted "Current origin: $CURRENT_ORIGIN_URL" "当前 origin：$CURRENT_ORIGIN_URL"
   else
+    warn \
+      "This local Git repository has no origin that identifies a GitHub repository." \
+      "这个本地 Git 仓库还没有能够识别为 GitHub 仓库的 origin。"
+    muted \
+      "Paste the GitHub repository that should receive this existing local history. No files will be uploaded until the address and account access are verified." \
+      "请粘贴这个现有本地仓库应当上传到的 GitHub 仓库地址；在地址和账号权限核对完成前，不会上传任何文件。"
     if ! prompt_repository; then
       return 1
     fi
     CURRENT_REPOSITORY_OWNER="$REPOSITORY_OWNER"
     CURRENT_REPOSITORY_NAME="$REPOSITORY_NAME"
+    CURRENT_ORIGIN_URL=""
+    CURRENT_ORIGIN_HOST="$REPOSITORY_INPUT_HOST"
   fi
 
   if ! select_account_for_repository "$CURRENT_REPOSITORY_OWNER" "$preferred_username"; then
@@ -2691,21 +3120,38 @@ configure_project() {
 
   proposed_remote_url="git@${BOUND_SSH_ALIAS}:${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME}.git"
 
-  heading "Confirm project connection" "确认项目连接"
+  heading "Verify the exact GitHub destination" "核对准确的 GitHub 上传目标"
   muted \
-    "Repository: ${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME}" \
-    "仓库：${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME}"
-  muted "Account: $BOUND_USERNAME" "账号：$BOUND_USERNAME"
+    "GitHub repository: ${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME}" \
+    "GitHub 仓库：${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME}"
+  muted "GitHub account: $BOUND_USERNAME" "GitHub 账号：$BOUND_USERNAME"
+  muted "Commit author name: $BOUND_USERNAME" "提交作者名称：$BOUND_USERNAME"
+  muted "Commit email: $BOUND_EMAIL" "提交邮箱：$BOUND_EMAIL"
+  muted "SSH private key: $(human_path "$BOUND_IDENTITY_FILE")" "SSH 私钥：$(human_path "$BOUND_IDENTITY_FILE")"
+  muted "Push address: $proposed_remote_url" "上传地址：$proposed_remote_url"
 
-  verify_key_matches_username "$BOUND_IDENTITY_FILE" "$BOUND_USERNAME" || return 1
   verify_repository_access yes "$proposed_remote_url" || return 1
+
+  if [ -n "$CURRENT_ORIGIN_URL" ] && [ "$CURRENT_ORIGIN_URL" != "$proposed_remote_url" ]; then
+    info \
+      "origin will change from $CURRENT_ORIGIN_URL to $proposed_remote_url so future fetches and pushes use the verified account." \
+      "为确保以后拉取和推送都使用核对无误的账号，origin 将从 ${CURRENT_ORIGIN_URL} 更新为 ${proposed_remote_url}。"
+  elif [ -z "$CURRENT_ORIGIN_URL" ]; then
+    info "origin will be added as $proposed_remote_url." "将新增 origin：${proposed_remote_url}。"
+  else
+    muted \
+      "The existing origin already uses the verified account and will not change." \
+      "现有 origin 已经使用核对无误的账号，不需要修改。"
+  fi
 
   if ! save_project_binding; then
     fail \
       "The account settings for this project could not be saved." \
       "无法保存当前项目的账号设置。"
   fi
-  success "The project is connected." "项目已经连接。"
+  success \
+    "Saved the account, commit author, SSH key, and origin in this repository's local Git configuration." \
+    "账号、提交作者、SSH 密钥和 origin 已保存到当前仓库自己的本地 Git 配置中。"
 }
 
 prompt_commit_message() {
@@ -2715,9 +3161,12 @@ prompt_commit_message() {
   heading "Confirm commit" "确认提交"
   muted "Suggested commit message: $proposed" "建议的提交说明：$proposed"
   entered="$(ui_prompt_value \
-    "Press Enter to use it, or type another message" \
-    "直接按 Enter 使用，或输入其他说明" \
+    "Press Enter to use it, type another message, or enter :cancel to stop before staging" \
+    "直接按 Enter 使用建议内容；也可以输入其他说明，或输入 :cancel 在暂存前停止" \
     "$proposed")" || return 1
+  if [ "$(lowercase "$entered")" = ":cancel" ]; then
+    return 2
+  fi
   COMMIT_MESSAGE="$entered"
 }
 
@@ -2734,12 +3183,16 @@ prepare_and_commit() {
     has_commits=false
   fi
 
-  git -C "$GIT_ROOT" add -A || fail \
-    "The project changes could not be staged." \
-    "无法整理项目改动。"
-
-  if git -C "$GIT_ROOT" diff --cached --quiet; then
-    warn "There are no new changes to commit." "没有新的改动需要提交。"
+  if [ -z "$(git -C "$GIT_ROOT" status --porcelain 2>/dev/null)" ]; then
+    if [ "$has_commits" = false ]; then
+      warn \
+        "This repository has no commit and no project files available to commit. Nothing was pushed." \
+        "当前仓库还没有提交记录，也没有可提交的项目文件，因此本次不会上传。"
+      return 3
+    fi
+    info \
+      "The working tree has no uncommitted changes. No commit will be created; any existing local commits will still be considered for push." \
+      "工作区没有尚未提交的改动，因此不会创建新提交；如果本地已有尚未上传的提交，后续仍会尝试推送。"
     return 0
   fi
 
@@ -2768,11 +3221,43 @@ prepare_and_commit() {
       "没有发现版本号，将使用通用提交说明。"
   fi
 
+  heading "Review changes before committing" "提交前检查改动"
+  muted \
+    "The following output is from git status --short. A means added, M modified, D deleted, and ?? an untracked file." \
+    "下面是 git status --short 的结果：A 表示新增，M 表示修改，D 表示删除，?? 表示尚未跟踪的新文件。"
+  git -C "$GIT_ROOT" status --short
+  muted \
+    "After the commit message is confirmed, git add -A will include every change shown above, including deletions." \
+    "确认提交说明后，脚本会执行 git add -A，把上面显示的全部改动一并纳入提交，其中也包括删除的文件。"
+
+  prompt_commit_message "$proposed"
+  case "$?" in
+    0)
+      ;;
+    2)
+      warn \
+        "Commit canceled before git add -A. This step did not stage, commit, or push any files." \
+        "已在执行 git add -A 前取消；这一步没有暂存、提交或上传任何文件。"
+      return 2
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+
+  if ! git -C "$GIT_ROOT" add -A; then
+    error_message \
+      "git add -A failed. Git may have staged some paths before stopping; inspect git status. No commit or push was attempted." \
+      "git add -A 执行失败。Git 可能已经暂存了部分文件，请用 git status 检查；脚本没有继续提交或上传。"
+    return 1
+  fi
   show_staged_changes
-  prompt_commit_message "$proposed" || return 1
 
   if ! git -C "$GIT_ROOT" commit -m "$COMMIT_MESSAGE"; then
-    fail "The commit was not completed." "提交没有完成。"
+    error_message \
+      "The commit failed. The selected changes remain staged for inspection, and no push was attempted." \
+      "提交失败。本次选择的改动仍保留在暂存区，便于检查；脚本没有执行上传。"
+    return 1
   fi
   success "Committed: $COMMIT_MESSAGE" "已提交：$COMMIT_MESSAGE"
 
@@ -2794,32 +3279,61 @@ push_current_branch() {
   fi
 
   heading "Push to GitHub" "上传到 GitHub"
-  muted "Account: $BOUND_USERNAME" "账号：$BOUND_USERNAME"
-  muted "Branch: $branch" "分支：$branch"
+  muted "GitHub repository: ${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME}" "GitHub 仓库：${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME}"
+  muted "GitHub account: $BOUND_USERNAME" "GitHub 账号：$BOUND_USERNAME"
+  muted "Local branch: $branch" "本地分支：$branch"
+  muted \
+    "The script will run git push -u origin $branch with only $(human_path "$BOUND_IDENTITY_FILE"). It will not force-push." \
+    "接下来只使用密钥 $(human_path "$BOUND_IDENTITY_FILE") 执行 git push -u origin ${branch}；不会强制推送。"
 
   if ! run_git_with_identity "$BOUND_IDENTITY_FILE" push -u origin "$branch"; then
     fail \
       "The push failed. No force push was used and no remote content was overwritten." \
       "上传失败。脚本没有强制推送，也没有覆盖远端内容。"
   fi
-  success "Push completed." "上传完成。"
+  success \
+    "Pushed branch $branch to ${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME} with account $BOUND_USERNAME." \
+    "已使用账号 $BOUND_USERNAME 将分支 $branch 上传到 ${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME}。"
 }
 
 run_project_flow() {
   local preferred_username="${1:-}"
+  local commit_status=0
 
   require_interactive
   require_core_commands
   locate_project yes
+  describe_and_validate_project_state || return 1
   ensure_script_excluded
 
   if [ "$ACCOUNT_COUNT" -eq 0 ]; then
-    run_account_setup || return 1
-    preferred_username="$SELECTED_USERNAME"
+    heading "GitHub account required" "需要选择 GitHub 账号"
+    if [ "$PROJECT_GIT_STATE" = "existing" ]; then
+      muted \
+        "The local Git repository was already initialized and its existing history will be preserved, but private/config.txt has no saved GitHub account. The next step configures an account; it does not run git init again." \
+        "当前文件夹原本就是 Git 仓库，现有提交历史会完整保留；只是 private/config.txt 中还没有保存 GitHub 账号。接下来只配置账号，不会再次执行 git init。"
+    else
+      muted \
+        "The empty local Git metadata was just initialized. private/config.txt has no saved GitHub account, so the next step configures one before any commit or push." \
+        "本地 Git 元数据刚刚完成初始化。由于 private/config.txt 中还没有保存 GitHub 账号，接下来会先配置账号，再进入提交和上传步骤。"
+    fi
+    if read_origin_repository && select_verified_origin_account yes; then
+      preferred_username="$BOUND_USERNAME"
+    else
+      run_account_setup || return 1
+      preferred_username="$SELECTED_USERNAME"
+    fi
   fi
 
   configure_project "$preferred_username" || return 1
-  prepare_and_commit || return 1
+  prepare_and_commit || commit_status=$?
+  if [ "$commit_status" -eq 2 ]; then
+    return 0
+  elif [ "$commit_status" -eq 3 ]; then
+    return 0
+  elif [ "$commit_status" -ne 0 ]; then
+    return 1
+  fi
   push_current_branch
 }
 
@@ -3710,76 +4224,6 @@ advanced_verify_key_matches_username() {
     "已确认 GitHub 账号：$VERIFIED_GITHUB_USERNAME"
 }
 
-advanced_create_new_identity() {
-  local username="$1"
-  local email="$2"
-  local public_key=""
-
-  ensure_ssh_storage
-  if ! next_available_alias "$username"; then
-    advanced_error "Could not choose a safe SSH name." "无法为该账号生成不冲突的本地连接配置。"
-    return 1
-  fi
-
-  advanced_heading "Create a secure GitHub connection" "配置 GitHub 安全连接"
-  advanced_muted "Account: $username" "账号：$username"
-  advanced_muted "Local key: $(human_path "$NEW_IDENTITY_FILE")" "本地密钥：$(human_path "$NEW_IDENTITY_FILE")"
-  advanced_muted \
-    "You may protect the key with a passphrase. Press Enter twice to use no passphrase." \
-    "接下来可以设置密钥口令；如果不需要，请连续按两次 Enter。"
-
-  if ! ssh-keygen -t ed25519 -C "$email" -f "$NEW_IDENTITY_FILE"; then
-    advanced_error "Key creation did not finish." "密钥创建未完成。"
-    return 1
-  fi
-  chmod 600 "$NEW_IDENTITY_FILE" || true
-  chmod 644 "${NEW_IDENTITY_FILE}.pub" || true
-  install_ssh_alias_block "$username" "$NEW_SSH_ALIAS" "$NEW_IDENTITY_FILE"
-  try_add_key_to_agent "$NEW_IDENTITY_FILE"
-
-  public_key="${NEW_IDENTITY_FILE}.pub"
-  advanced_heading "Add the key to GitHub" "在 GitHub 中添加公钥"
-  if copy_public_key "$public_key"; then
-    advanced_success "The public key was copied to the clipboard." "公钥已复制到剪贴板。"
-  else
-    advanced_muted "Copy this complete line:" "请复制下面这一整行："
-    sed -n '1p' "$public_key"
-  fi
-  advanced_muted \
-    "Make sure the browser is signed in as $username, then paste and save the key." \
-    "请确认浏览器登录的是账号 ${username}，然后粘贴并保存密钥。"
-  advanced_muted \
-    "The title can be this computer's name. Keep the key type as Authentication Key." \
-    "Title 可以填写这台电脑的名称；Key type 保持 Authentication Key。"
-
-  if advanced_prompt_yes_no \
-    "Open GitHub's Add SSH key page now?" \
-    "现在打开 GitHub 的 SSH 密钥添加页面吗？" \
-    "yes"; then
-    open_github_key_page
-  else
-    muted "https://github.com/settings/ssh/new"
-  fi
-
-  if [ "$ADVANCED_LANGUAGE" = "en" ]; then
-    pause_for_user "After saving the key on GitHub, press Enter to verify: "
-  else
-    pause_for_user "在 GitHub 保存密钥后，按 Enter 开始验证："
-  fi
-
-  while ! advanced_verify_key_matches_username "$NEW_IDENTITY_FILE" "$username"; do
-    if ! advanced_prompt_yes_no \
-      "Retry after fixing the GitHub key?" \
-      "修正 GitHub 密钥后重新验证？" \
-      "yes"; then
-      return 1
-    fi
-  done
-
-  FOUND_SSH_ALIAS="$NEW_SSH_ALIAS"
-  FOUND_IDENTITY_FILE="$NEW_IDENTITY_FILE"
-}
-
 advanced_add_account() {
   local username=""
   local email=""
@@ -3805,9 +4249,7 @@ advanced_add_account() {
     advanced_warn "The email format was not recognized." "邮箱格式无法识别。"
   done
 
-  if find_verified_identity_for_username "$username"; then
-    :
-  elif ! advanced_create_new_identity "$username" "$email"; then
+  if ! check_saved_account_identity "$username" "$email"; then
     return 1
   fi
 
@@ -3817,7 +4259,9 @@ advanced_add_account() {
   BOUND_EMAIL="$email"
   BOUND_SSH_ALIAS="$FOUND_SSH_ALIAS"
   BOUND_IDENTITY_FILE="$FOUND_IDENTITY_FILE"
-  advanced_success "Account $username is ready." "账号 $username 已准备好。"
+  advanced_success \
+    "Saved account $username and its commit email in private/config.txt." \
+    "已把账号 $username 和提交邮箱保存到 private/config.txt。"
 }
 
 advanced_select_account_for_history() {
@@ -3863,48 +4307,42 @@ advanced_select_account_for_history() {
     done
   fi
 
-  if find_verified_identity_for_username "$BOUND_USERNAME"; then
-    BOUND_SSH_ALIAS="$FOUND_SSH_ALIAS"
-    BOUND_IDENTITY_FILE="$FOUND_IDENTITY_FILE"
-    return 0
-  fi
-
-  advanced_warn \
-    "Account $BOUND_USERNAME does not yet have a verified SSH connection on this computer." \
-    "账号 $BOUND_USERNAME 尚未在这台电脑上配置可验证身份的 SSH 密钥。"
-  if ! advanced_prompt_yes_no \
-    "Create it now?" \
-    "现在自动配置吗？" \
-    "yes"; then
-    return 1
-  fi
-  if advanced_create_new_identity "$BOUND_USERNAME" "$BOUND_EMAIL"; then
-    BOUND_SSH_ALIAS="$FOUND_SSH_ALIAS"
-    BOUND_IDENTITY_FILE="$FOUND_IDENTITY_FILE"
-    return 0
-  fi
-  return 1
+  check_saved_account_identity "$BOUND_USERNAME" "$BOUND_EMAIL" || return 1
+  BOUND_SSH_ALIAS="$FOUND_SSH_ALIAS"
+  BOUND_IDENTITY_FILE="$FOUND_IDENTITY_FILE"
+  return 0
 }
 
 advanced_verify_repository_access() {
   local target="$1"
   local GIT_ROOT="$SCRIPT_DIRECTORY"
+  local output=""
+  local detail=""
 
   while true; do
-    advanced_info "Checking repository access..." "正在确认仓库访问权限……"
-    if run_git_with_identity "$BOUND_IDENTITY_FILE" ls-remote "$target" HEAD >/dev/null 2>&1; then
+    advanced_info \
+      "Reading ${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME} with account $BOUND_USERNAME; this check does not upload or change the repository." \
+      "正在用账号 $BOUND_USERNAME 读取 ${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME} 的远端信息；这一步不会上传或修改仓库。"
+    output="$(run_git_with_identity "$BOUND_IDENTITY_FILE" ls-remote "$target" HEAD 2>&1)" && {
       advanced_success \
-        "The account and repository access are verified." \
-        "账号和仓库访问权限均已确认。"
+        "GitHub allowed account $BOUND_USERNAME to read ${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME}." \
+        "GitHub 已允许账号 $BOUND_USERNAME 读取 ${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME}。"
       return 0
-    fi
+    }
     advanced_error \
       "Account $BOUND_USERNAME cannot currently access ${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME}." \
       "账号 $BOUND_USERNAME 当前无法访问 ${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME}。"
+    detail="${output##*$'\n'}"
+    if [ -n "$detail" ]; then
+      advanced_muted "Git result: $detail" "Git 返回信息：$detail"
+    fi
     advanced_muted \
       "Make sure the repository exists and this account has access: https://github.com/new" \
       "请确认仓库已经创建，且该账号拥有访问权限：https://github.com/new"
-    if ! advanced_prompt_yes_no "Check again?" "处理后重新检查？" "yes"; then
+    if ! advanced_prompt_yes_no \
+      "Run the same read-only access check again?" \
+      "要再次执行同一项只读访问检查吗？" \
+      "yes"; then
       return 1
     fi
   done
@@ -4345,7 +4783,7 @@ run_historical_release_import() {
 
   advanced_prepare_history_destination || return 1
 
-  advanced_heading "Ready to build" "确认即将构建的内容"
+  advanced_heading "Review the temporary history construction" "核对即将创建的临时历史"
   advanced_muted \
     "$HISTORY_RELEASE_COUNT release commit(s) will be created on main in a new temporary repository." \
     "脚本将在一个全新的临时 Git 仓库中创建 $HISTORY_RELEASE_COUNT 个版本提交，并统一使用 main 分支。"
@@ -4353,7 +4791,10 @@ run_historical_release_import() {
   advanced_muted \
     "Repository: ${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME}" \
     "仓库：${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME}"
-  if ! advanced_prompt_yes_no "Build the temporary history now?" "确认开始构建吗？" "yes"; then
+  if ! advanced_prompt_yes_no \
+    "Build the temporary repository now without uploading it?" \
+    "现在只创建临时仓库、暂不上传吗？" \
+    "yes"; then
     return 0
   fi
 
@@ -4649,6 +5090,10 @@ update_resolve_identity_file() {
   UPDATE_OLD_ALIAS=""
   saved_key="$(git -C "$GIT_ROOT" config --local --get github-auto.identity-file 2>/dev/null || true)"
   saved_alias="$(git -C "$GIT_ROOT" config --local --get github-auto.ssh-alias 2>/dev/null || true)"
+  if [ -z "$saved_alias" ] && [ -n "$CURRENT_ORIGIN_HOST" ] &&
+     ssh_alias_is_github "$CURRENT_ORIGIN_HOST"; then
+    saved_alias="$CURRENT_ORIGIN_HOST"
+  fi
 
   if [ -n "$saved_key" ]; then
     saved_key="$(expand_home_path "$saved_key")"
@@ -4679,8 +5124,11 @@ update_resolve_identity_file() {
   fi
 
   advanced_error \
-    "The key previously used by this project could not be found. Run ./$SCRIPT_NAME menu and use Check and repair first." \
-    "没有找到这个项目原来使用的密钥。请先运行 ./$SCRIPT_NAME menu，并使用“检查与修复”。"
+    "No existing private key for this account was found through the repository settings, origin SSH Host, or ~/.ssh/config." \
+    "从当前仓库设置、origin 使用的 SSH 主机名以及 ~/.ssh/config 中，都没有找到这个账号原来使用的私钥。"
+  advanced_muted \
+    "Run ./$SCRIPT_NAME menu and choose Verify accounts and current project before retrying update." \
+    "请先运行 ./$SCRIPT_NAME menu，选择“核对账号和当前项目”，完成密钥检查后再重试 update。"
   return 1
 }
 
@@ -4689,8 +5137,8 @@ update_verify_identity() {
 
   while true; do
     advanced_info \
-      "Confirming the GitHub account for the existing key..." \
-      "正在确认原有密钥现在对应的 GitHub 账号……"
+      "Asking GitHub which username now accepts the existing private key $(human_path "$UPDATE_IDENTITY_FILE")..." \
+      "正在用现有私钥 $(human_path "$UPDATE_IDENTITY_FILE") 向 GitHub 核对更名后的用户名……"
     if identify_key_username "$UPDATE_IDENTITY_FILE"; then
       if [ "$(lowercase "$VERIFIED_GITHUB_USERNAME")" = "$(lowercase "$expected_username")" ]; then
         advanced_success \
@@ -4713,7 +5161,10 @@ update_verify_identity() {
     advanced_muted \
       "GitHub account settings: https://github.com/settings/admin" \
       "GitHub 账号设置：https://github.com/settings/admin"
-    if ! advanced_prompt_yes_no "Check again?" "处理好后重新检查？" "yes"; then
+    if ! advanced_prompt_yes_no \
+      "Verify the same existing key with GitHub again?" \
+      "要再次用这把现有密钥向 GitHub 核对用户名吗？" \
+      "yes"; then
       return 1
     fi
   done
@@ -4813,28 +5264,37 @@ update_prepare_alias() {
 
 update_verify_repository() {
   local remote_url="git@github.com:${UPDATE_NEW_OWNER}/${UPDATE_NEW_REPOSITORY}.git"
+  local output=""
+  local detail=""
 
   while true; do
     advanced_info \
-      "Confirming access to ${UPDATE_NEW_OWNER}/${UPDATE_NEW_REPOSITORY}..." \
-      "正在确认能否访问 ${UPDATE_NEW_OWNER}/${UPDATE_NEW_REPOSITORY}……"
-    if run_git_with_identity "$UPDATE_IDENTITY_FILE" ls-remote "$remote_url" HEAD >/dev/null 2>&1; then
+      "Reading ${UPDATE_NEW_OWNER}/${UPDATE_NEW_REPOSITORY} with account $UPDATE_NEW_USERNAME; this check does not change the repository." \
+      "正在用账号 $UPDATE_NEW_USERNAME 读取 ${UPDATE_NEW_OWNER}/${UPDATE_NEW_REPOSITORY} 的远端信息；这一步不会修改仓库。"
+    output="$(run_git_with_identity "$UPDATE_IDENTITY_FILE" ls-remote "$remote_url" HEAD 2>&1)" && {
       advanced_success \
-        "The account and new repository address are ready." \
-        "账号和新的仓库地址都已确认。"
+        "GitHub allowed account $UPDATE_NEW_USERNAME to read ${UPDATE_NEW_OWNER}/${UPDATE_NEW_REPOSITORY}." \
+        "GitHub 已允许账号 $UPDATE_NEW_USERNAME 读取 ${UPDATE_NEW_OWNER}/${UPDATE_NEW_REPOSITORY}。"
       return 0
-    fi
+    }
 
     advanced_error \
       "$UPDATE_NEW_USERNAME cannot access ${UPDATE_NEW_OWNER}/${UPDATE_NEW_REPOSITORY} yet." \
       "$UPDATE_NEW_USERNAME 目前还无法访问 ${UPDATE_NEW_OWNER}/${UPDATE_NEW_REPOSITORY}。"
+    detail="${output##*$'\n'}"
+    if [ -n "$detail" ]; then
+      advanced_muted "Git result: $detail" "Git 返回信息：$detail"
+    fi
     advanced_muted \
       "GitHub may still be processing the change. Also make sure this account can access the repository." \
       "GitHub 可能仍在同步刚才的更名，也请确认这个账号拥有该仓库的访问权限。"
     advanced_muted \
       "Current repository settings: https://github.com/${UPDATE_OLD_OWNER}/${UPDATE_OLD_REPOSITORY}/settings" \
       "当前仓库设置：https://github.com/${UPDATE_OLD_OWNER}/${UPDATE_OLD_REPOSITORY}/settings"
-    if ! advanced_prompt_yes_no "Check again?" "处理好后重新检查？" "yes"; then
+    if ! advanced_prompt_yes_no \
+      "Run the same read-only access check again?" \
+      "要再次执行同一项只读访问检查吗？" \
+      "yes"; then
       return 1
     fi
   done
@@ -4918,13 +5378,16 @@ run_update_command() {
       "当前文件夹还不是 Git 项目。请把 ${SCRIPT_NAME} 放到项目根目录，并先运行 ./${SCRIPT_NAME}。"
     return 1
   fi
+  advanced_success \
+    "Existing Git repository detected: $(human_path "$GIT_ROOT"). git init will not run." \
+    "已识别现有 Git 仓库：$(human_path "$GIT_ROOT")。不会执行 git init。"
   if ! read_origin_repository; then
     advanced_error \
       "The current project does not have a recognizable GitHub origin." \
       "当前项目还没有可识别的 GitHub 远端仓库。"
     advanced_muted \
-      "Run ./$SCRIPT_NAME first to connect the project." \
-      "请先运行 ./$SCRIPT_NAME 完成项目连接。"
+      "Run ./$SCRIPT_NAME first and provide the GitHub repository address when prompted." \
+      "请先运行 ./${SCRIPT_NAME}，并在提示时填写这个项目对应的 GitHub 仓库地址。"
     return 1
   fi
 
@@ -5010,12 +5473,14 @@ run_update_command() {
   update_resolve_identity_file "$UPDATE_NEW_USERNAME" || return 1
   update_verify_identity "$UPDATE_NEW_USERNAME" || return 1
   update_prepare_alias "$username_changed" || {
-    advanced_error "A safe SSH connection name could not be prepared." "无法准备安全的 SSH 连接名称。"
+    advanced_error \
+      "An unused SSH Host name for the existing key could not be selected." \
+      "无法为现有密钥找到不冲突的 SSH 主机名。"
     return 1
   }
   update_verify_repository || return 1
 
-  advanced_heading "Ready to update" "即将更新"
+  advanced_heading "Review the local settings that will change" "核对即将修改的本机设置"
   advanced_muted \
     "Account: $UPDATE_OLD_USERNAME -> $UPDATE_NEW_USERNAME" \
     "GitHub 账号：$UPDATE_OLD_USERNAME -> $UPDATE_NEW_USERNAME"
@@ -5029,13 +5494,26 @@ run_update_command() {
     advanced_muted \
       "The existing account key will be reused. No new key will be created." \
       "原账号密钥会继续使用，不会重复创建新密钥。"
+    advanced_muted \
+      "private/config.txt: replace the saved username and commit email." \
+      "private/config.txt：更新已保存的用户名和提交邮箱。"
+  fi
+  if [ "$UPDATE_INSTALL_ALIAS" = true ]; then
+    advanced_muted \
+      "~/.ssh/config: add SSH Host $UPDATE_NEW_ALIAS for the existing private key; the previous Host entry will remain." \
+      "~/.ssh/config：为现有私钥新增 SSH 主机名 ${UPDATE_NEW_ALIAS}；原来的主机配置会继续保留。"
   fi
   advanced_muted \
-    "Project files, commits, and branches will not be changed." \
-    "项目文件、提交记录和分支都不会被改动。"
+    ".git/config: update the repository-local commit author, selected account, exact private key, and origin fetch/push address." \
+    ".git/config：更新当前仓库的提交作者、所选账号、指定私钥以及 origin 的拉取和推送地址。"
+  advanced_muted \
+    "Project files, commits, branches, and the GitHub repository will not be changed or pushed." \
+    "项目文件、提交记录、分支和 GitHub 远端仓库都不会被修改，也不会执行推送。"
 
   if ! advanced_prompt_yes_no "Apply these updates?" "确认更新本机设置？" "yes"; then
-    advanced_warn "Canceled. Nothing was changed." "已取消，没有修改任何设置。"
+    advanced_warn \
+      "Canceled. private/config.txt, ~/.ssh/config, this repository's .git/config, project files, and the GitHub repository were not changed." \
+      "已取消；private/config.txt、~/.ssh/config、当前仓库的 .git/config、项目文件和 GitHub 远端仓库均未修改。"
     return 0
   fi
 
@@ -5047,12 +5525,12 @@ run_update_command() {
   fi
 
   advanced_success \
-    "The account and repository settings are up to date." \
-    "账号和仓库设置已完成同步。"
+    "Saved the verified username, repository address, commit author, SSH key, and origin in the local configuration files shown above." \
+    "已把核对无误的用户名、仓库地址、提交作者、SSH 密钥和 origin 保存到上面列出的本机配置文件中。"
   if [ "$username_changed" = "yes" ] && [ -n "$UPDATE_OLD_ALIAS" ]; then
     advanced_muted \
-      "The previous SSH connection was kept so other local projects continue to work." \
-      "原来的 SSH 连接已保留，避免影响这台电脑上的其他项目。"
+      "The previous SSH Host entry was kept so other local projects that reference it continue to work." \
+      "原来的 SSH 主机配置已保留，避免影响仍在引用它的其他本地项目。"
   fi
 }
 
@@ -5135,9 +5613,9 @@ create_or_repair_project_launcher() {
 
   if [ "$project_directory" -ef "$ENGINE_DIRECTORY" ]; then
     warn \
-      "The central git-auto folder does not need its own g.sh launcher." \
-      "中央 git-auto 文件夹不需要再创建 g.sh 启动器。"
-    return 1
+      "The central git-auto repository already contains its public, copy-ready g.sh, so no file was replaced." \
+      "中央 git-auto 仓库已经包含公开且可直接复制的 g.sh，因此没有替换任何文件。"
+    return 0
   fi
 
   launcher_file="$project_directory/g.sh"
@@ -5159,11 +5637,70 @@ create_or_repair_project_launcher() {
       "无法创建项目启动器。"
   fi
   success \
-    "Launcher ready: $launcher_file" \
-    "项目启动器已准备好：$launcher_file"
+    "Created the lightweight launcher: $launcher_file" \
+    "已创建轻量启动器：$launcher_file"
   muted \
     "From now on, use ./g.sh, ./g.sh new, ./g.sh update, or ./g.sh menu in that project." \
     "以后在这个项目中直接使用 ./g.sh、./g.sh new、./g.sh update 或 ./g.sh menu。"
+}
+
+check_saved_account_identity() {
+  local username="$1"
+  local email="$2"
+  local detail=""
+
+  muted \
+    "Checking SSH keys for GitHub account $username..." \
+    "正在核对 GitHub 账号 $username 的 SSH 密钥……"
+  if find_verified_identity_for_username "$username"; then
+    success \
+      "GitHub accepted $(human_path "$FOUND_IDENTITY_FILE") as account $username through SSH Host $FOUND_SSH_ALIAS." \
+      "GitHub 已确认密钥 $(human_path "$FOUND_IDENTITY_FILE") 属于账号 ${username}；对应的 SSH 主机名是 ${FOUND_SSH_ALIAS}。"
+    return 0
+  fi
+
+  if [ -n "$FOUND_UNVERIFIED_IDENTITY_FILE" ]; then
+    warn \
+      "The key $(human_path "$FOUND_UNVERIFIED_IDENTITY_FILE") exists, but GitHub did not confirm it for account $username." \
+      "密钥 $(human_path "$FOUND_UNVERIFIED_IDENTITY_FILE") 确实存在，但 GitHub 暂时没有确认它属于账号 ${username}。"
+    detail="${SSH_VERIFICATION_OUTPUT##*$'\n'}"
+    if [ -n "$detail" ]; then
+      muted "SSH result: $detail" "SSH 返回信息：$detail"
+    fi
+    if ui_prompt_yes_no \
+      "Verify this existing key with GitHub one more time?" \
+      "要再用这把现有密钥向 GitHub 核对一次账号吗？" \
+      "yes"; then
+      if identify_key_username "$FOUND_UNVERIFIED_IDENTITY_FILE" &&
+         [ "$(lowercase "$VERIFIED_GITHUB_USERNAME")" = "$(lowercase "$username")" ]; then
+        FOUND_SSH_ALIAS="$FOUND_UNVERIFIED_SSH_ALIAS"
+        FOUND_IDENTITY_FILE="$FOUND_UNVERIFIED_IDENTITY_FILE"
+        success \
+          "GitHub confirmed that the existing key belongs to account $username." \
+          "GitHub 已确认这把现有密钥属于账号 ${username}。"
+        return 0
+      fi
+    fi
+  else
+    warn \
+      "No SSH private key accepted by GitHub for account $username was found in ~/.ssh/config or its Include files." \
+      "在 ~/.ssh/config 及其 Include 文件中，没有找到可由 GitHub 确认为账号 $username 的现有私钥。"
+  fi
+
+  next_available_alias "$username" || return 1
+  muted \
+    "Creating another key will add private key $(human_path "$NEW_IDENTITY_FILE") and SSH Host $NEW_SSH_ALIAS; existing keys and Host entries will remain unchanged." \
+    "如果新建，将增加私钥 $(human_path "$NEW_IDENTITY_FILE") 和 SSH 主机名 ${NEW_SSH_ALIAS}；已有密钥和主机配置不会被删除或覆盖。"
+  if ! ui_prompt_yes_no \
+    "Create and verify this separate SSH key for account $username?" \
+    "要为账号 $username 创建并验证这把独立的 SSH 密钥吗？" \
+    "yes"; then
+    warn \
+      "No new SSH key was created for account $username." \
+      "没有为账号 $username 创建新的 SSH 密钥。"
+    return 1
+  fi
+  create_new_identity "$username" "$email"
 }
 
 check_private_accounts() {
@@ -5173,10 +5710,13 @@ check_private_accounts() {
   local missing_count=0
 
   require_core_commands
-  heading "Check GitHub accounts" "检查 GitHub 账号"
+  heading "Verify saved GitHub SSH keys" "核对已保存账号的 SSH 密钥"
   if [ "$ACCOUNT_COUNT" -eq 0 ]; then
     warn "No GitHub account has been added yet." "还没有添加 GitHub 账号。"
-    if ui_prompt_yes_no "Add one now?" "现在添加？" "yes"; then
+    if ui_prompt_yes_no \
+      "Add a GitHub username, commit email, and verified SSH key now?" \
+      "现在添加 GitHub 用户名、提交邮箱并验证对应的 SSH 密钥吗？" \
+      "yes"; then
       run_account_setup || return 1
     fi
     return 0
@@ -5185,29 +5725,20 @@ check_private_accounts() {
   while [ "$index" -lt "$ACCOUNT_COUNT" ]; do
     username="${ACCOUNT_USERNAMES[$index]}"
     email="${ACCOUNT_EMAILS[$index]}"
-    muted "Checking account ${username}..." "正在检查账号 ${username}……"
-    if find_verified_identity_for_username "$username"; then
-      success "${username}: connection is ready" "${username}：连接正常"
-    else
-      warn "${username}: secure connection needs repair" "${username}：需要修复安全连接"
+    if ! check_saved_account_identity "$username" "$email"; then
       missing_count=$((missing_count + 1))
-      if ui_prompt_yes_no \
-        "Repair ${username} automatically now?" \
-        "现在自动修复 ${username}？" \
-        "yes" && create_new_identity "$username" "$email"; then
-        success "$username was repaired." "$username 已修复。"
-        missing_count=$((missing_count - 1))
-      fi
     fi
     index=$((index + 1))
   done
 
   if [ "$missing_count" -eq 0 ]; then
-    success "All configured accounts are ready." "所有已配置账号均可正常使用。"
+    success \
+      "GitHub accepted an SSH key for every saved account." \
+      "GitHub 已分别确认每个已保存账号对应的 SSH 密钥。"
   else
     warn \
-      "$missing_count account(s) still need attention." \
-      "仍有 $missing_count 个账号需要完成设置。"
+      "$missing_count saved account(s) still have no SSH key verified by GitHub." \
+      "仍有 $missing_count 个已保存账号没有通过 GitHub 验证的 SSH 密钥。"
   fi
 }
 
@@ -5224,7 +5755,7 @@ run_central_menu() {
     if [ "$UI_LANGUAGE" = "zh" ]; then
       printf '  1) 为项目创建或修复 g.sh\n'
       printf '  2) 添加 GitHub 账号\n'
-      printf '  3) 检查 GitHub 账号\n'
+      printf '  3) 核对各账号的 SSH 密钥\n'
       printf '  4) 界面语言\n'
       printf '  5) 显示模式\n'
       printf '  6) 高级功能\n'
@@ -5232,7 +5763,7 @@ run_central_menu() {
     else
       printf '  1) Create or repair a project g.sh\n'
       printf '  2) Add a GitHub account\n'
-      printf '  3) Check GitHub accounts\n'
+      printf '  3) Verify account SSH keys\n'
       printf '  4) Interface language\n'
       printf '  5) Display mode\n'
       printf '  6) Advanced features\n'
@@ -5408,40 +5939,31 @@ check_and_repair() {
   local missing_count=0
 
   require_core_commands
-  heading "Check and repair" "检查与修复"
+  heading "Verify saved accounts and the current project" "核对已保存账号和当前项目"
 
   if [ "$ACCOUNT_COUNT" -eq 0 ]; then
     warn "No GitHub account has been added yet." "还没有 GitHub 账号。"
-    if ui_prompt_yes_no "Add one now?" "现在添加？" "yes"; then
+    if ui_prompt_yes_no \
+      "Add a GitHub username, commit email, and verified SSH key now?" \
+      "现在添加 GitHub 用户名、提交邮箱并验证对应的 SSH 密钥吗？" \
+      "yes"; then
       run_account_setup || return 1
     fi
   else
     while [ "$index" -lt "$ACCOUNT_COUNT" ]; do
       username="${ACCOUNT_USERNAMES[$index]}"
       email="${ACCOUNT_EMAILS[$index]}"
-      muted "Checking account ${username}..." "正在检查账号 ${username}……"
-      if find_verified_identity_for_username "$username"; then
-        success "${username}: connection is ready" "${username}：连接正常"
-      else
-        warn \
-          "${username}: secure connection needs repair" \
-          "${username}：需要修复安全连接"
+      if ! check_saved_account_identity "$username" "$email"; then
         missing_count=$((missing_count + 1))
-        if ui_prompt_yes_no \
-          "Repair ${username} automatically now?" \
-          "现在自动修复 ${username}？" \
-          "yes"; then
-          if create_new_identity "$username" "$email"; then
-            success "$username was repaired." "$username 已修复。"
-            missing_count=$((missing_count - 1))
-          fi
-        fi
       fi
       index=$((index + 1))
     done
   fi
 
   if locate_project no; then
+    success \
+      "Existing Git repository detected: $(human_path "$GIT_ROOT"). git init will not run." \
+      "已识别现有 Git 仓库：$(human_path "$GIT_ROOT")。不会执行 git init。"
     if read_origin_repository; then
       muted \
         "Current repository: ${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME}" \
@@ -5453,46 +5975,68 @@ check_and_repair() {
           "当前项目使用的账号：$username"
       else
         warn \
-          "The current project is not bound to an account yet." \
-          "当前项目还没有绑定账号。"
-        if ui_prompt_yes_no "Set it up automatically now?" "现在自动设置？" "yes"; then
+          "This repository has no saved github-auto.username in its local .git/config." \
+          "当前仓库的本地 .git/config 中还没有保存 github-auto.username。"
+        muted \
+          "The next step selects an account, verifies its SSH key and repository access, then saves only repository-local Git settings." \
+          "下一步会选择账号，核对 SSH 密钥和仓库访问权限，然后只保存当前仓库自己的本地 Git 设置。"
+        if ui_prompt_yes_no \
+          "Choose and verify the account for this repository now?" \
+          "现在为这个仓库选择并核对 GitHub 账号吗？" \
+          "yes"; then
           configure_project || return 1
         fi
       fi
     else
       warn \
-        "The current project is not connected to a GitHub repository yet." \
-        "当前项目还没有连接 GitHub 仓库。"
+        "This Git repository has no origin that identifies a GitHub repository." \
+        "这个 Git 仓库还没有能够识别为 GitHub 仓库的 origin。"
     fi
   else
     muted \
-      "The current folder has not been initialized as a Git project." \
-      "当前文件夹还没有初始化为 Git 项目。"
+      "The current folder is not a Git repository; this verification command did not run git init." \
+      "当前文件夹还不是 Git 仓库；本次核对不会执行 git init。"
   fi
 
   if [ "$missing_count" -eq 0 ]; then
     success \
-      "Check completed. No unresolved problems were found." \
-      "检查完成，没有发现尚未处理的问题。"
+      "GitHub accepted an SSH key for every saved account checked above." \
+      "GitHub 已分别确认上面每个已保存账号对应的 SSH 密钥。"
   else
     warn \
-      "$missing_count account(s) still need attention." \
-      "仍有 $missing_count 个账号需要完成设置。"
+      "$missing_count saved account(s) still have no SSH key verified by GitHub." \
+      "仍有 $missing_count 个已保存账号没有通过 GitHub 验证的 SSH 密钥。"
   fi
 }
 
 run_new_command() {
-  if ! run_account_setup; then
-    return 1
+  local account_ready=false
+
+  require_core_commands
+  if locate_project no &&
+     read_origin_repository &&
+     identify_origin_ssh_account &&
+     ! account_index "$ORIGIN_VERIFIED_USERNAME" >/dev/null 2>&1; then
+    if select_verified_origin_account yes; then
+      account_ready=true
+    fi
+  fi
+
+  if [ "$account_ready" = false ]; then
+    if ! run_account_setup; then
+      return 1
+    fi
   fi
 
   if ui_prompt_yes_no \
-    "Set up and push the current project now?" \
-    "现在设置并上传当前项目？" \
+    "Use account $SELECTED_USERNAME for this project, review its changes, commit them, and push its current branch?" \
+    "要使用账号 $SELECTED_USERNAME 核对当前项目、检查改动、创建提交并上传当前分支吗？" \
     "yes"; then
     run_project_flow "$SELECTED_USERNAME"
   else
-    success "Account setup is complete." "账号设置已经完成。"
+    success \
+      "The account and commit email were saved. The current project was not changed or pushed." \
+      "账号和提交邮箱已经保存；当前项目没有被修改，也没有上传。"
   fi
 }
 
@@ -5507,7 +6051,7 @@ run_menu() {
       printf '  2) 添加 GitHub 账号\n'
       printf '  3) 切换当前项目的账号\n'
       printf '  4) 同步用户名或仓库改名\n'
-      printf '  5) 检查与修复\n'
+      printf '  5) 核对账号和当前项目\n'
       printf '  6) 界面语言\n'
       printf '  7) 显示模式\n'
       printf '  8) 高级功能\n'
@@ -5517,7 +6061,7 @@ run_menu() {
       printf '  2) Add a GitHub account\n'
       printf '  3) Switch the current project account\n'
       printf '  4) Sync a renamed username or repository\n'
-      printf '  5) Check and repair\n'
+      printf '  5) Verify accounts and current project\n'
       printf '  6) Interface language\n'
       printf '  7) Display mode\n'
       printf '  8) Advanced features\n'
@@ -5602,7 +6146,8 @@ main() {
   initialize_language || return 1
   ADVANCED_LANGUAGE="$UI_LANGUAGE"
 
-  if [ "$SCRIPT_DIRECTORY" -ef "$ENGINE_DIRECTORY" ]; then
+  if [ "$RUNNING_FROM_LAUNCHER" != "1" ] &&
+     [ "$SCRIPT_DIRECTORY" -ef "$ENGINE_DIRECTORY" ]; then
     at_engine_home=true
     command_name="${1:-menu}"
   fi

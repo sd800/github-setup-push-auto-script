@@ -4,14 +4,14 @@
 
 [Chinese](README_zh.md)
 
-Auto Script for GitHub Setup and Push is a centralized Bash utility for anyone who wants a shorter, safer path from local changes to a verified GitHub push. One `git-auto.sh` engine manages the full workflow, while each project needs only a tiny local `g.sh` launcher.
+Auto Script for GitHub Setup and Push is a centralized Bash utility for anyone who wants a shorter, safer path from local changes to a verified GitHub push. One `git-auto.sh` engine handles the detailed workflow, while each project uses the same small `g.sh` interface.
 
 The everyday interface stays deliberately small:
 
-- `./g.sh`: Set up the current project when needed, then commit and push.
-- `./g.sh new`: Add or import a GitHub account, then optionally connect the current project.
+- `./g.sh`: Detect the current Git repository, verify its GitHub account and destination, review changes, commit, and push.
+- `./g.sh new`: Add or import a GitHub account, then optionally use it for the current project.
 - `./g.sh update`: Synchronize local settings after a GitHub username, repository name, or repository owner changes.
-- `./g.sh menu`: Open account, repair, preference, and advanced tools.
+- `./g.sh menu`: Open account, project verification, preference, and advanced tools.
 
 SSH identities, account verification, repository-specific authorship, release commit messages, upstream branches, and strict push identity are handled behind this interface.
 
@@ -36,7 +36,7 @@ your-project/
 `-- project files...
 ```
 
-`git-auto.sh` is the only full implementation. There is no public/personal script pair and no duplicated account block inside executable code. Updating the central engine updates the behavior used by every generated launcher.
+`git-auto.sh` is the only full implementation. There is no public/personal script pair and no duplicated account block inside executable code. Updating the central engine updates the behavior used by every launcher.
 
 ## First-time setup
 
@@ -47,7 +47,7 @@ chmod +x git-auto.sh
 ./git-auto.sh
 ```
 
-The first interactive run asks for the interface language once and creates `private/config.txt`. The central menu can create a project's lightweight `g.sh` automatically. The repository also includes a public, copy-ready `g.sh`, so manual copy and paste works too:
+The first interactive run asks for the interface language once and records it in `private/config.txt`. The central menu can copy `g.sh` into a selected project. The repository also includes the same public, copy-ready launcher, so a manual copy works too:
 
 ```bash
 cp g.sh /path/to/your-project/g.sh
@@ -62,7 +62,7 @@ After that, move to the project and use only the short commands:
 ./g.sh menu
 ```
 
-No shell alias, PATH change, package installation, or application-specific home configuration directory is required.
+No shell alias, PATH change, package installation, or application-specific home configuration directory is required. Run the tracked root `./g.sh` when this central repository itself needs to be committed and pushed.
 
 ## Central management menu
 
@@ -70,17 +70,17 @@ Running `./git-auto.sh` from the central folder opens the management menu. It ca
 
 - Create or repair `g.sh` for a selected project.
 - Add a GitHub account to the shared private profile.
-- Check and repair configured GitHub SSH identities.
+- Verify the SSH key used by each saved GitHub account and offer an exact recovery step when verification fails.
 - Change the shared interface language or display mode.
 - Open advanced tools, including historical release import.
 
-Running `./git-auto.sh new` from the central folder goes directly to account setup. Project-specific operations remain on the local `g.sh` interface.
+Running `./git-auto.sh new` from the central folder goes directly to account setup. Direct `./git-auto.sh` is reserved for central management; project operations, including operations on the central repository itself, use `./g.sh`.
 
 ## Lightweight project launcher
 
-The public `g.sh` contains no GitHub account, SSH, version, commit, or history-building logic. It determines its own project folder and locates the central engine automatically: project-local Git settings first, then a neighboring or ancestor-level `git-auto/` folder, common home locations, and `PATH`. Only when all automatic choices fail does it ask for the `git-auto.sh` path.
+The public `g.sh` contains no GitHub account, SSH, version, commit, or history-building logic. It treats its own folder as the project root and locates the central engine automatically: project-local Git settings first, then the same folder, a neighboring or ancestor-level `git-auto/` folder, common home locations, and `PATH`. Only when all of those choices fail does it ask for the `git-auto.sh` path.
 
-The root `g.sh` is part of this public repository and is not ignored. When the central menu copies it into another project, that project copy is added to `.git/info/exclude` without changing the project's shared `.gitignore`. The resolved central path is remembered only in that project's local `.git/config`; the launcher itself remains generic and safe to publish.
+The root `g.sh` is tracked and is never placed in this repository's ignore rules. When the central menu copies it into another project, only that project copy is added to `.git/info/exclude`; the project's shared `.gitignore` is not changed. After a project is configured successfully, the resolved central path is remembered in that project's local `.git/config`. The launcher itself remains generic and contains no personal path.
 
 If the central folder moves, the launcher searches again and can accept a pasted path in English or Chinese. The central menu can also repair project launchers; no project data or account configuration needs to be rebuilt.
 
@@ -107,33 +107,31 @@ Every user of the public project gets an independent ignored `private/` folder. 
 
 ## What happens when you run g.sh
 
-The default workflow is ordered around decisions a user understands:
+The default workflow follows the state of the project:
 
-1. Use the launcher folder as the exact project root.
-2. Initialize Git if the folder is not already a repository.
-3. Load shared accounts from the central private profile.
-4. Ask for a repository only when no recognizable `origin` exists.
-5. Select an obvious matching account automatically or show only configured usernames.
-6. Verify the exact private key, authenticated GitHub username, and repository access before saving a binding.
-7. Stage changes and show a proposed commit message.
-8. Create a commit only after confirmation.
-9. Push the current branch with the verified account and key.
+1. Treat the folder containing `g.sh` as the exact project root.
+2. Detect an existing Git repository before doing anything else. Existing commits, branches, staged changes, and remotes are preserved, and `git init` is not run again. If no repository exists, the script explains that `git init` creates local metadata only, then initializes it.
+3. Stop before changing files when HEAD is detached, merge conflicts remain, or a merge, rebase, cherry-pick, or revert is unfinished.
+4. Read `origin`. If it uses an SSH Host such as `github800`, verify that Host's exact key and GitHub username first. Ask for a repository address only when `origin` does not identify one.
+5. Prefer the repository's saved account, then a verified origin account, then an unambiguous owner match. Show a username choice only when no safe automatic match exists.
+6. Confirm read access to the exact destination with the selected private key, then save only repository-local author, identity, engine path, and `origin` settings.
+7. Show `git status --short` before staging. The user can accept the suggested commit message, replace it, or enter `:cancel`. Only after that decision does the script run `git add -A`.
+8. Create the commit, show what it contains, and push the current branch with the one verified key. Ordinary pushes never use force.
 
-Completed setup is recognized and skipped. A canceled or failed identity check does not write a partial repository binding.
+A clean repository creates no unnecessary commit. An empty repository with no project files stops without attempting a push. Canceling at the commit prompt happens before `git add -A` and preserves any changes that were already staged.
 
 ## GitHub account setup
 
-`./g.sh new` and the central account menu follow the same guided process:
+`./g.sh new` and the central account menu use the same account rules:
 
-1. Scan `~/.ssh/config` and its `Include` files for entries whose effective `HostName` is `github.com`.
-2. Resolve each candidate key and ask GitHub which username it authenticates as.
-3. Offer to import a verified account that is not yet in `private/config.txt`.
-4. If no reusable identity exists, ask only for the GitHub username and commit email.
-5. Create a dedicated ED25519 key and collision-safe SSH entry.
-6. Guide the user through adding the public key to the correct GitHub account.
-7. Verify GitHub authentication before saving the account.
+1. When the current project has an SSH `origin` whose verified account has not been saved yet, check that Host and key first. If GitHub confirms the account, only the commit email is requested.
+2. Otherwise scan `~/.ssh/config` and its `Include` files for concrete entries whose effective `HostName` is `github.com`.
+3. Resolve each distinct candidate key once and ask GitHub which username it authenticates as.
+4. Offer to save a verified account that is not yet in `private/config.txt`.
+5. If no reusable identity exists, ask for the GitHub username and commit email, then show the exact key path and SSH Host that would be added.
+6. Create a dedicated ED25519 key only after confirmation, guide the user through adding its public key to the correct GitHub account, and verify the returned username before saving the account.
 
-New aliases use `github-USERNAME`. Collisions are handled automatically with `-1`, `-2`, and later numbers. Each newly created account receives a different private key; an existing verified key is reused instead of duplicated.
+New SSH Host names use `github-USERNAME`. Collisions are handled automatically with `-1`, `-2`, and later numbers. Each newly created account receives a different private key; an existing key is reused only after GitHub confirms the exact username. A failed network check does not silently create a replacement key: the result is shown and the user can retry first.
 
 The suggested private commit email uses GitHub's current `ID+USERNAME@users.noreply.github.com` form. Any email already verified by GitHub can be entered instead.
 
@@ -158,6 +156,7 @@ https://github.com/owner/repository/tree/main
 https://github.com/owner/repository/blob/main/README.md
 git@github.com:owner/repository.git
 ssh://git@github.com/owner/repository.git
+git://github.com/owner/repository.git
 git clone https://github.com/owner/repository.git
 gh repo clone owner/repository
 ```
@@ -168,13 +167,13 @@ Query strings, fragments, trailing slashes, `.git`, and repository page paths ar
 
 After completing a username change, repository rename, or repository transfer on GitHub, run `./g.sh update` in the affected project.
 
-The flow asks what changed and requests only the relevant new information. It verifies that the existing key now authenticates as the new username and that the account can access the exact new repository. Username changes reuse the existing key, create a collision-safe new alias, preserve the old alias for other projects, update the shared private account entry, and synchronize this repository's author and both `origin` URLs.
+The flow assumes the change is already complete on GitHub. It asks what changed and requests only the relevant new information. Before writing anything, it verifies that the existing key now authenticates as the new username and that the account can read the exact renamed or transferred repository. A final review lists every local file and Git setting that will change.
 
-Project files, branches, and commit history are not modified by this update flow.
+Username changes reuse the existing key, create a collision-safe username-based SSH Host when needed, preserve the previous Host for other projects, update the shared private account entry, and synchronize this repository's author and both `origin` URLs. Project files, branches, commits, and the GitHub repository are not modified or pushed. Canceling the final review leaves `private/config.txt`, `~/.ssh/config`, and the repository's `.git/config` unchanged.
 
 ## Commit messages and release versions
 
-Every real commit remains user-confirmed. The engine proposes a message after showing the staged summary.
+Every real commit remains user-confirmed. The engine shows the working-tree status and proposes a message before it stages all changes. After confirmation it runs `git add -A`, shows the staged summary, and creates the commit.
 
 For an existing repository, release versions are discovered in this order:
 
@@ -217,7 +216,7 @@ The engine writes only to locations required by the requested workflow:
 - The selected repository's `.git/config` and `.git/info/exclude` for local binding and launcher exclusion.
 - Temporary directories for strict SSH wrappers and historical reconstruction.
 
-Private keys are never copied into the central project or `private/config.txt`. Ordinary pushes never use force. Source release folders are never changed by historical import.
+The script does not use any other application-specific configuration directory. It creates or edits `~/.ssh` only when SSH identity work is explicitly part of the selected flow, and it shows the exact new key and Host before creation. Private keys are never copied into the central project or `private/config.txt`. Ordinary pushes never use force. Source release folders are never changed by historical import.
 
 ## Requirements and testing
 

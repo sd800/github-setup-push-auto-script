@@ -6,13 +6,38 @@
 
 All notable changes to Auto Script for GitHub Setup and Push are documented in this file.
 
+## 2.1.0 - 2026-08-31
+
+### Added
+
+- Added an explicit project-state phase that reports the exact repository root and current branch, preserves existing Git history, and stops safely on detached HEAD, unresolved conflicts, or unfinished Git operations.
+- Added origin-aware account discovery: SSH remotes such as `git@github800:owner/repository.git` now verify that Host's configured key and GitHub username before considering other accounts.
+- Added a pre-staging cancellation boundary, empty-repository handling, read-only update cancellation guarantees, and regression coverage for each of those states.
+- Added `git://github.com/owner/repository.git` to the accepted repository address variants.
+
+### Changed
+
+- Reordered the default workflow around project state, origin, account, exact key, destination access, change review, commit, and push.
+- Made existing repositories state explicitly that `git init` will not run again and that commits, branches, staged changes, and remotes are preserved.
+- Made the tracked root `g.sh` operate on the central repository itself; direct `git-auto.sh` now remains the unambiguous central-management entry.
+- Deduplicated SSH checks for multiple Host entries that reference the same private key.
+- Reworked English and Chinese interface text to name the exact key, Host, repository, account, file, command, and write boundary involved in each decision.
+- Updated both README versions to match the implemented user flow and local-state boundaries.
+
+### Fixed
+
+- Fixed existing repositories with a valid custom GitHub SSH Host being sent through generic account creation or prompted to create another key.
+- Fixed Chinese text variables followed by full-width punctuation being parsed as different shell variable names.
+- Fixed normal runs rewriting local engine-path settings during read-only detection or update cancellation.
+- Fixed the central repository's tracked `g.sh` being treated like an ignored project-only launcher.
+
 ## 2.0.0 - 2026-08-31
 
 ### Added
 
 - Added `git-auto.sh` as the single complete central engine shared by every project.
 - Added a tracked, generic root `g.sh` that can be copied directly from the public repository without containing a personal path or account value.
-- Added automatic generation and repair of project-local `g.sh` launchers that stay under 20 lines, preserve the four-command interface, and pass the exact launcher folder as the project root.
+- Added automatic generation and repair of small project-local `g.sh` launchers that preserve the four-command interface and pass the exact launcher folder as the project root.
 - Added a bilingual central management menu for launcher creation, shared account setup and repair, preferences, and advanced tools.
 - Added the ignored `private/config.txt` profile for language, display mode, and all shared GitHub account metadata.
 - Added owner-only permissions for the private directory and configuration file.

@@ -80,6 +80,7 @@ test_repository_parser() {
     "https://github.com/octocat/repo.git"
     "https://www.github.com/octocat/repo/tree/main"
     "https://github.com/octocat/repo/blob/main/README.md?plain=1#top"
+    "git://github.com/octocat/repo.git"
     "git@github.com:octocat/repo.git"
     "ssh://git@github.com/octocat/repo.git"
     "ssh://git@ssh.github.com:443/octocat/repo.git"
@@ -489,6 +490,9 @@ test_update_prompt_flow() {
   local original_ui_language="$UI_LANGUAGE"
   local original_advanced_language="${ADVANCED_LANGUAGE:-en}"
   local output=""
+  local before_git_config=""
+  local before_private_config=""
+  local before_ssh_config=""
 
   mkdir -p "$flow_repository" "$flow_home/.ssh"
   : > "$flow_script"
@@ -537,11 +541,24 @@ test_update_prompt_flow() {
   assert_equal "flow-new" "${ACCOUNT_USERNAMES[0]}" "guided update collects a new username through the Chinese flow"
   assert_equal "flow-new@users.noreply.github.com" "${ACCOUNT_EMAILS[0]}" "guided update recommends a matching private commit email"
   assert_equal "git@github-flow-new:flow-new/renamed-repo.git" "$(git -C "$flow_repository" remote get-url origin)" "guided update applies username and repository changes after one confirmation"
-  if printf '%s\n' "$output" | grep -Fq '账号和仓库设置已完成同步。' &&
+  if printf '%s\n' "$output" | grep -Fq '已把核对无误的用户名、仓库地址、提交作者、SSH 密钥和 origin 保存到上面列出的本机配置文件中。' &&
      printf '%s\n' "$output" | grep -Fq '原账号密钥会继续使用，不会重复创建新密钥。'; then
     pass "guided update uses naturally localized Chinese explanations"
   else
     fail_test "guided update uses naturally localized Chinese explanations"
+  fi
+
+  before_git_config="$(git -C "$flow_repository" config --local --list | sort)"
+  before_private_config="$(cat "$PRIVATE_CONFIG_FILE")"
+  before_ssh_config="$(cat "$SSH_CONFIG_FILE")"
+  output="$(run_update_command 2>&1 <<< $'2\nanother-repository\nn\n')"
+  assert_equal "$before_git_config" "$(git -C "$flow_repository" config --local --list | sort)" "canceling update preserves every repository-local Git setting"
+  assert_equal "$before_private_config" "$(cat "$PRIVATE_CONFIG_FILE")" "canceling update preserves private account configuration"
+  assert_equal "$before_ssh_config" "$(cat "$SSH_CONFIG_FILE")" "canceling update preserves SSH configuration"
+  if printf '%s\n' "$output" | grep -Fq '已取消；private/config.txt、~/.ssh/config、当前仓库的 .git/config、项目文件和 GitHub 远端仓库均未修改。'; then
+    pass "Chinese update cancellation states the exact no-write result"
+  else
+    fail_test "Chinese update cancellation states the exact no-write result"
   fi
 
   eval "$saved_require_interactive"
@@ -801,6 +818,209 @@ test_project_root_identity() {
   GIT_ROOT="$original_root"
 }
 
+test_existing_repository_state() {
+  local repository="$TEST_TEMPORARY/existing-repository-state"
+  local original_directory="$SCRIPT_DIRECTORY"
+  local original_name="$SCRIPT_NAME"
+  local original_root="${GIT_ROOT:-}"
+  local original_state="${PROJECT_GIT_STATE:-}"
+  local original_language="$UI_LANGUAGE"
+  local before_config=""
+  local after_config=""
+  local output=""
+  local git_directory=""
+
+  mkdir -p "$repository"
+  git -C "$repository" init -q
+  git -C "$repository" config user.name tester
+  git -C "$repository" config user.email tester@example.com
+  printf 'existing\n' > "$repository/file.txt"
+  git -C "$repository" add file.txt
+  git -C "$repository" commit -qm existing
+  git -C "$repository" branch -M main
+
+  SCRIPT_DIRECTORY="$repository"
+  SCRIPT_NAME="g.sh"
+  UI_LANGUAGE="en"
+  before_config="$(git -C "$repository" config --local --list | sort)"
+  if locate_project no; then
+    output="$(describe_and_validate_project_state 2>&1)"
+    after_config="$(git -C "$repository" config --local --list | sort)"
+    assert_equal "existing" "$PROJECT_GIT_STATE" "existing repository is classified before any setup"
+    assert_equal "$before_config" "$after_config" "read-only project detection does not rewrite local Git configuration"
+    if printf '%s\n' "$output" | grep -Fq 'Existing Git repository detected:' &&
+       printf '%s\n' "$output" | grep -Fq 'git init will not run again.' &&
+       printf '%s\n' "$output" | grep -Fq 'Current branch: main'; then
+      pass "existing repository explanation distinguishes detection from initialization"
+    else
+      fail_test "existing repository explanation distinguishes detection from initialization"
+    fi
+  else
+    fail_test "existing repository is classified before any setup"
+    fail_test "read-only project detection does not rewrite local Git configuration"
+    fail_test "existing repository explanation distinguishes detection from initialization"
+  fi
+
+  git -C "$repository" checkout -q --detach
+  if describe_and_validate_project_state >/dev/null 2>&1; then
+    fail_test "detached HEAD stops the normal push flow before changes"
+  else
+    pass "detached HEAD stops the normal push flow before changes"
+  fi
+  git -C "$repository" checkout -q main
+
+  git_directory="$(git -C "$repository" rev-parse --absolute-git-dir)"
+  mkdir -p "$git_directory/rebase-merge"
+  if describe_and_validate_project_state >/dev/null 2>&1; then
+    fail_test "an unfinished Git operation stops the normal push flow"
+  else
+    pass "an unfinished Git operation stops the normal push flow"
+  fi
+  rmdir "$git_directory/rebase-merge"
+
+  SCRIPT_DIRECTORY="$original_directory"
+  SCRIPT_NAME="$original_name"
+  GIT_ROOT="$original_root"
+  PROJECT_GIT_STATE="$original_state"
+  UI_LANGUAGE="$original_language"
+}
+
+test_origin_alias_identity_selection() {
+  local case_root="$TEST_TEMPORARY/origin-alias-identity"
+  local repository="$case_root/repository"
+  local fake_home="$case_root/home"
+  local fake_key="$fake_home/.ssh/id_ed25519_github800"
+  local original_ssh_directory="$SSH_DIRECTORY"
+  local original_ssh_config="$SSH_CONFIG_FILE"
+  local original_root="${GIT_ROOT:-}"
+  local original_language="$UI_LANGUAGE"
+  local saved_identify_key_username=""
+  local before_config=""
+
+  mkdir -p "$repository" "$fake_home/.ssh"
+  git -C "$repository" init -q
+  : > "$fake_key"
+  printf 'Host github800\n    HostName github.com\n    User git\n    IdentityFile %s\n    IdentitiesOnly yes\n' "$fake_key" > "$fake_home/.ssh/config"
+  git -C "$repository" remote add origin git@github800:sd800/example.git
+
+  SSH_DIRECTORY="$fake_home/.ssh"
+  SSH_CONFIG_FILE="$SSH_DIRECTORY/config"
+  GIT_ROOT="$repository"
+  UI_LANGUAGE="en"
+  BOUND_USERNAME="sd800"
+  BOUND_EMAIL="sd800@users.noreply.github.com"
+  before_config="$(cat "$SSH_CONFIG_FILE")"
+  saved_identify_key_username="$(declare -f identify_key_username)"
+  identify_key_username() {
+    VERIFIED_GITHUB_USERNAME="sd800"
+    SSH_VERIFICATION_OUTPUT=""
+    return 0
+  }
+
+  if read_origin_repository && ensure_bound_identity; then
+    assert_equal "github800" "$CURRENT_ORIGIN_HOST" "existing origin preserves its SSH Host name as an identity hint"
+    assert_equal "github800|$fake_key" "$BOUND_SSH_ALIAS|$BOUND_IDENTITY_FILE" "existing origin alias selects its exact verified account key"
+    assert_equal "$before_config" "$(cat "$SSH_CONFIG_FILE")" "verified origin alias is reused without creating another SSH key or Host entry"
+  else
+    fail_test "existing origin preserves its SSH Host name as an identity hint"
+    fail_test "existing origin alias selects its exact verified account key"
+    fail_test "verified origin alias is reused without creating another SSH key or Host entry"
+  fi
+
+  eval "$saved_identify_key_username"
+  SSH_DIRECTORY="$original_ssh_directory"
+  SSH_CONFIG_FILE="$original_ssh_config"
+  GIT_ROOT="$original_root"
+  UI_LANGUAGE="$original_language"
+}
+
+test_commit_cancellation_boundary() {
+  local repository="$TEST_TEMPORARY/commit-cancellation"
+  local empty_repository="$TEST_TEMPORARY/empty-repository"
+  local original_root="${GIT_ROOT:-}"
+  local original_language="$UI_LANGUAGE"
+  local before_cached=""
+  local after_cached=""
+  local before_head=""
+  local output=""
+  local status=0
+
+  mkdir -p "$repository"
+  git -C "$repository" init -q
+  git -C "$repository" config user.name tester
+  git -C "$repository" config user.email tester@example.com
+  printf 'one\n' > "$repository/staged.txt"
+  printf 'one\n' > "$repository/unstaged.txt"
+  git -C "$repository" add staged.txt unstaged.txt
+  git -C "$repository" commit -qm baseline
+
+  printf 'two\n' >> "$repository/staged.txt"
+  git -C "$repository" add staged.txt
+  printf 'two\n' >> "$repository/unstaged.txt"
+  GIT_ROOT="$repository"
+  UI_LANGUAGE="en"
+  before_cached="$(git -C "$repository" diff --cached)"
+  before_head="$(git -C "$repository" rev-parse HEAD)"
+  output="$(prepare_and_commit 2>&1 <<< ':cancel')" || status=$?
+  after_cached="$(git -C "$repository" diff --cached)"
+
+  assert_equal "2" "$status" "commit cancellation returns the dedicated clean-stop status"
+  assert_equal "$before_cached" "$after_cached" "commit cancellation preserves pre-existing staged changes"
+  assert_equal "$before_head" "$(git -C "$repository" rev-parse HEAD)" "commit cancellation creates no commit"
+  if ! git -C "$repository" diff --quiet -- unstaged.txt &&
+     printf '%s\n' "$output" | grep -Fq 'Commit canceled before git add -A.'; then
+    pass "commit cancellation occurs before staging all working-tree changes"
+  else
+    fail_test "commit cancellation occurs before staging all working-tree changes"
+  fi
+
+  mkdir -p "$empty_repository"
+  git -C "$empty_repository" init -q
+  GIT_ROOT="$empty_repository"
+  status=0
+  output="$(prepare_and_commit 2>&1)" || status=$?
+  assert_equal "3" "$status" "an empty repository stops cleanly without attempting a push"
+  if printf '%s\n' "$output" | grep -Fq 'no commit and no project files available to commit'; then
+    pass "an empty repository explains why there is nothing to upload"
+  else
+    fail_test "an empty repository explains why there is nothing to upload"
+  fi
+
+  GIT_ROOT="$original_root"
+  UI_LANGUAGE="$original_language"
+}
+
+test_central_root_launcher_dispatch() {
+  local saved_initialize_language=""
+  local saved_run_project_flow=""
+  local saved_run_central_menu=""
+  local original_script_directory="$SCRIPT_DIRECTORY"
+  local original_running="$RUNNING_FROM_LAUNCHER"
+  local output=""
+
+  saved_initialize_language="$(declare -f initialize_language)"
+  saved_run_project_flow="$(declare -f run_project_flow)"
+  saved_run_central_menu="$(declare -f run_central_menu)"
+  initialize_language() { return 0; }
+  run_project_flow() { printf 'project-flow\n'; }
+  run_central_menu() { printf 'central-menu\n'; }
+  SCRIPT_DIRECTORY="$ENGINE_DIRECTORY"
+
+  RUNNING_FROM_LAUNCHER=1
+  output="$(main)"
+  assert_equal "project-flow" "$output" "root g.sh operates on the central repository as a normal project"
+
+  RUNNING_FROM_LAUNCHER=0
+  output="$(main)"
+  assert_equal "central-menu" "$output" "direct git-auto.sh keeps the central management menu"
+
+  eval "$saved_initialize_language"
+  eval "$saved_run_project_flow"
+  eval "$saved_run_central_menu"
+  SCRIPT_DIRECTORY="$original_script_directory"
+  RUNNING_FROM_LAUNCHER="$original_running"
+}
+
 test_self_exclusion_modes() {
   local source_repository="$TEST_TEMPORARY/source-repository"
   local copied_repository="$TEST_TEMPORARY/copied-repository"
@@ -819,10 +1039,10 @@ test_self_exclusion_modes() {
   GIT_ROOT="$source_repository"
   ensure_script_excluded
   if git -C "$source_repository" ls-files --error-unmatch -- helper.sh >/dev/null 2>&1 &&
-     grep -Fq '/helper.sh' "$source_repository/.git/info/exclude"; then
-    pass "a tracked source script remains tracked"
+     ! grep -Fq '/helper.sh' "$source_repository/.git/info/exclude"; then
+    pass "a tracked source script remains tracked and is not locally excluded"
   else
-    fail_test "a tracked source script remains tracked"
+    fail_test "a tracked source script remains tracked and is not locally excluded"
   fi
 
   : > "$copied_repository/helper.sh"
@@ -1039,6 +1259,21 @@ test_user_interface_symbols() {
   else
     fail_test "script stores its preferences without an application config directory"
   fi
+
+  if ! grep -Eiq 'now automatically set up|set it up automatically now|secure connection|connection is ready|现在自动设置|自动配置\?|安全连接|连接正常|账号.*已准备好' "$script_file"; then
+    pass "user interface avoids vague setup and connection status wording"
+  else
+    fail_test "user interface avoids vague setup and connection status wording"
+  fi
+
+  if grep -Fq 'Existing Git repository detected:' "$script_file" &&
+     grep -Fq '已识别现有 Git 仓库：' "$script_file" &&
+     grep -Fq 'Create and configure this separate SSH key now?' "$script_file" &&
+     grep -Fq '现在创建并配置这把独立的 SSH 密钥吗？' "$script_file"; then
+    pass "critical repository and SSH decisions have explicit English and Chinese copy"
+  else
+    fail_test "critical repository and SSH decisions have explicit English and Chinese copy"
+  fi
 }
 
 printf 'TAP version 13\n'
@@ -1054,6 +1289,10 @@ test_central_distribution
 test_project_launcher
 test_public_documentation
 test_project_root_identity
+test_existing_repository_state
+test_origin_alias_identity_selection
+test_commit_cancellation_boundary
+test_central_root_launcher_dispatch
 test_self_exclusion_modes
 test_git_binding_and_commit
 test_guided_updates
