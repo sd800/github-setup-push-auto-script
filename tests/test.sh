@@ -510,12 +510,13 @@ test_update_prompt_flow() {
   local saved_identify_key_username=""
   local saved_run_git_with_identity=""
   local original_ui_language="$UI_LANGUAGE"
-  local original_advanced_language="$ADVANCED_LANGUAGE"
   local original_advanced_language="${ADVANCED_LANGUAGE:-en}"
   local output=""
   local before_git_config=""
   local before_private_config=""
   local before_ssh_config=""
+  local identity_marker="$flow_root/unexpected-identity-check"
+  local repository_marker="$flow_root/unexpected-repository-check"
 
   mkdir -p "$flow_repository" "$flow_home/.ssh"
   : > "$flow_script"
@@ -550,11 +551,12 @@ test_update_prompt_flow() {
     return 0
   }
   identify_key_username() {
-    VERIFIED_GITHUB_USERNAME="flow-new"
-    return 0
+    : > "$identity_marker"
+    return 1
   }
   run_git_with_identity() {
-    return 0
+    : > "$repository_marker"
+    return 1
   }
 
   UI_LANGUAGE="zh"
@@ -564,11 +566,28 @@ test_update_prompt_flow() {
   assert_equal "flow-new" "${ACCOUNT_USERNAMES[0]}" "guided update collects a new username through the Chinese flow"
   assert_equal "flow-new@users.noreply.github.com" "${ACCOUNT_EMAILS[0]}" "guided update recommends a matching private commit email"
   assert_equal "git@github-flow-new:flow-new/renamed-repo.git" "$(git -C "$flow_repository" remote get-url origin)" "guided update applies username and repository changes after one confirmation"
-  if printf '%s\n' "$output" | grep -Fq '已把核对无误的用户名、仓库地址、提交作者、SSH 密钥和 origin 保存到上面列出的本机配置文件中。' &&
+  if printf '%s\n' "$output" | grep -Fq '已把指定的用户名、仓库地址、提交作者、SSH 密钥和 origin 保存到上面列出的本机配置文件中。' &&
      printf '%s\n' "$output" | grep -Fq '原账号密钥会继续使用，不会重复创建新密钥。'; then
     pass "guided update uses naturally localized Chinese explanations"
   else
     fail_test "guided update uses naturally localized Chinese explanations"
+  fi
+  if [ ! -e "$identity_marker" ] && [ ! -e "$repository_marker" ] &&
+     printf '%s\n' "$output" | grep -Fq 'update 不会提前联网核对'; then
+    pass "username and repository update runs no online precheck"
+  else
+    fail_test "username and repository update runs no online precheck"
+  fi
+
+  output="$(run_update_command 2>&1 <<< $'2\nlocal-only-repository\n\n')"
+  assert_equal \
+    "git@github-flow-new:flow-new/local-only-repository.git" \
+    "$(git -C "$flow_repository" remote get-url origin)" \
+    "repository-only update applies the new local destination"
+  if [ ! -e "$identity_marker" ] && [ ! -e "$repository_marker" ]; then
+    pass "repository-only update runs no SSH or remote access precheck"
+  else
+    fail_test "repository-only update runs no SSH or remote access precheck"
   fi
 
   before_git_config="$(git -C "$flow_repository" config --local --list | sort)"
@@ -965,12 +984,16 @@ test_origin_alias_identity_selection() {
   local original_language="$UI_LANGUAGE"
   local saved_identify_key_username=""
   local before_config=""
+  local identity_checks=0
 
   mkdir -p "$repository" "$fake_home/.ssh"
   git -C "$repository" init -q
   : > "$fake_key"
   printf 'Host github800\n    HostName github.com\n    User git\n    IdentityFile %s\n    IdentitiesOnly yes\n' "$fake_key" > "$fake_home/.ssh/config"
   git -C "$repository" remote add origin git@github800:sd800/example.git
+  git -C "$repository" config --local github-auto.username sd800
+  git -C "$repository" config --local github-auto.ssh-alias github800
+  git -C "$repository" config --local github-auto.identity-file "$fake_key"
 
   SSH_DIRECTORY="$fake_home/.ssh"
   SSH_CONFIG_FILE="$SSH_DIRECTORY/config"
@@ -981,19 +1004,20 @@ test_origin_alias_identity_selection() {
   before_config="$(cat "$SSH_CONFIG_FILE")"
   saved_identify_key_username="$(declare -f identify_key_username)"
   identify_key_username() {
-    VERIFIED_GITHUB_USERNAME="sd800"
-    SSH_VERIFICATION_OUTPUT=""
-    return 0
+    identity_checks=$((identity_checks + 1))
+    return 1
   }
 
   if read_origin_repository && ensure_bound_identity; then
-    assert_equal "github800" "$CURRENT_ORIGIN_HOST" "existing origin preserves its SSH Host name as an identity hint"
-    assert_equal "github800|$fake_key" "$BOUND_SSH_ALIAS|$BOUND_IDENTITY_FILE" "existing origin alias selects its exact verified account key"
-    assert_equal "$before_config" "$(cat "$SSH_CONFIG_FILE")" "verified origin alias is reused without creating another SSH key or Host entry"
+    assert_equal "github800" "$CURRENT_ORIGIN_HOST" "existing origin preserves its SSH Host name as a local identity hint"
+    assert_equal "github800|$fake_key" "$BOUND_SSH_ALIAS|$BOUND_IDENTITY_FILE" "saved project binding reuses its exact local SSH key"
+    assert_equal "$before_config" "$(cat "$SSH_CONFIG_FILE")" "local binding reuse creates no replacement key or SSH Host"
+    assert_equal "0" "$identity_checks" "ordinary identity selection runs no SSH authentication precheck"
   else
-    fail_test "existing origin preserves its SSH Host name as an identity hint"
-    fail_test "existing origin alias selects its exact verified account key"
-    fail_test "verified origin alias is reused without creating another SSH key or Host entry"
+    fail_test "existing origin preserves its SSH Host name as a local identity hint"
+    fail_test "saved project binding reuses its exact local SSH key"
+    fail_test "local binding reuse creates no replacement key or SSH Host"
+    fail_test "ordinary identity selection runs no SSH authentication precheck"
   fi
 
   eval "$saved_identify_key_username"
@@ -1014,6 +1038,8 @@ test_repository_owner_account_enforcement() {
   local original_project_binding_reused="${PROJECT_BINDING_REUSED:-false}"
   local saved_ensure_bound_identity=""
   local saved_verify_repository_access=""
+  local saved_identify_key_username=""
+  local saved_run_git_with_identity=""
   local saved_prompt_commit_message=""
   local output=""
   local output_file="$TEST_TEMPORARY/repository-owner-fast-path-output"
@@ -1021,6 +1047,8 @@ test_repository_owner_account_enforcement() {
   local identity_checks=0
   local repository_checks=0
   local commit_prompt_checks=0
+  local identity_marker="$TEST_TEMPORARY/unexpected-bind-identity-check"
+  local repository_marker="$TEST_TEMPORARY/unexpected-bind-repository-check"
 
   mkdir -p "$repository"
   git -C "$repository" init -q
@@ -1086,6 +1114,27 @@ test_repository_owner_account_enforcement() {
   fi
   eval "$saved_ensure_bound_identity"
   eval "$saved_verify_repository_access"
+
+  git -C "$repository" config --local --unset-all remote.origin.pushurl
+  saved_identify_key_username="$(declare -f identify_key_username)"
+  saved_run_git_with_identity="$(declare -f run_git_with_identity)"
+  identify_key_username() {
+    : > "$identity_marker"
+    return 1
+  }
+  run_git_with_identity() {
+    : > "$repository_marker"
+    return 1
+  }
+  if configure_project "" bind > "$output_file" 2>&1 &&
+     [ ! -e "$identity_marker" ] && [ ! -e "$repository_marker" ] &&
+     load_established_project_binding; then
+    pass "ordinary project binding repairs local settings without an online precheck"
+  else
+    fail_test "ordinary project binding repairs local settings without an online precheck"
+  fi
+  eval "$saved_identify_key_username"
+  eval "$saved_run_git_with_identity"
 
   saved_prompt_commit_message="$(declare -f prompt_commit_message)"
   prompt_commit_message() {
@@ -1262,16 +1311,23 @@ test_historical_release_import() {
   local putty_key="$second/legacy-key.ppk"
   local remote="$TEST_TEMPORARY/history-remote.git"
   local fake_key="$TEST_TEMPORARY/history-fake-key"
+  local working_directory="$TEST_TEMPORARY/active-working-directory"
+  local divergent_directory="$TEST_TEMPORARY/divergent-working-directory"
   local messages=""
   local first_tree=""
   local final_tree=""
   local saved_prompt_function=""
+  local saved_run_git_with_identity=""
+  local tag_push_arguments="$TEST_TEMPORARY/tag-push-arguments"
+  local tag_push_calls=0
   local remote_head=""
   local local_head=""
   local head_count=""
   local unrelated_commit=""
   local original_max="$HISTORY_MAX_FILE_BYTES"
   local risk_output=""
+  local working_readme_before=""
+  local divergent_file_before=""
 
   mkdir -p "$first/.git" "$second/nested/.git" "$releases/notes"
   printf '# first\n' > "$first/README.md"
@@ -1412,6 +1468,31 @@ test_historical_release_import() {
     fail_test "historical source folders remain unchanged"
   fi
 
+  saved_run_git_with_identity="$(declare -f run_git_with_identity)"
+  run_git_with_identity() {
+    local ignored_key="$1"
+    shift
+    tag_push_calls=$((tag_push_calls + 1))
+    printf '%s\n' "$*" > "$tag_push_arguments"
+    [ -n "$ignored_key" ]
+  }
+  HISTORY_NEW_TAGS=(v1.0.0 v2.0.0)
+  HISTORY_NEW_TAG_COUNT=2
+  HISTORY_CONFLICT_TAGS=(v3.0.0)
+  HISTORY_CONFLICT_TAG_REMOTE_OIDS=(1111111111111111111111111111111111111111)
+  HISTORY_CONFLICT_TAG_COUNT=1
+  HISTORY_REPLACE_CONFLICTING_TAGS=true
+  history_push_tags
+  assert_equal "1" "$tag_push_calls" "historical version tags use one batched push"
+  if grep -Fq 'push --force-with-lease=refs/tags/v3.0.0:1111111111111111111111111111111111111111 origin refs/tags/v1.0.0:refs/tags/v1.0.0 refs/tags/v2.0.0:refs/tags/v2.0.0 refs/tags/v3.0.0:refs/tags/v3.0.0' "$tag_push_arguments"; then
+    pass "batched tag push keeps conflict leases before the remote"
+  else
+    fail_test "batched tag push keeps conflict leases before the remote"
+  fi
+  eval "$saved_run_git_with_identity"
+  HISTORY_CREATE_TAGS=true
+  HISTORY_REPLACE_CONFLICTING_TAGS=false
+
   if history_publish_repository; then
     remote_head="$(git --git-dir="$remote" rev-parse refs/heads/main)"
     local_head="$(git -C "$HISTORY_WORK_DIRECTORY" rev-parse main)"
@@ -1420,16 +1501,65 @@ test_historical_release_import() {
     fail_test "publishes rebuilt history to an empty remote without force"
   fi
 
+  mkdir -p "$working_directory"
+  printf '# current work\n' > "$working_directory/README.md"
+  printf 'current-only\n' > "$working_directory/current-only.txt"
+  working_readme_before="$(cat "$working_directory/README.md")"
+  if history_link_working_directory "$working_directory"; then
+    assert_equal "$working_readme_before" "$(cat "$working_directory/README.md")" "history linking preserves files in a non-empty working directory"
+    assert_equal "$local_head" "$(git -C "$working_directory" rev-parse HEAD)" "non-empty working directory is connected to rebuilt main"
+    assert_equal "main" "$(git -C "$working_directory" branch --show-current)" "linked working directory uses main"
+    assert_equal "git@github-history-user:history-user/history-repository.git" "$(git -C "$working_directory" remote get-url origin)" "linked working directory receives the strict owner remote"
+    if [ -x "$working_directory/g.sh" ] &&
+       git -C "$working_directory" check-ignore -q g.sh &&
+       git -C "$working_directory" status --short | grep -Fq '?? current-only.txt'; then
+      pass "linked working directory is ready for its next ./g.sh run"
+    else
+      fail_test "linked working directory is ready for its next ./g.sh run"
+    fi
+  else
+    fail_test "history linking preserves files in a non-empty working directory"
+    fail_test "non-empty working directory is connected to rebuilt main"
+    fail_test "linked working directory uses main"
+    fail_test "linked working directory receives the strict owner remote"
+    fail_test "linked working directory is ready for its next ./g.sh run"
+  fi
+
+  mkdir -p "$divergent_directory"
+  git -C "$divergent_directory" init -q
+  git -C "$divergent_directory" config user.name tester
+  git -C "$divergent_directory" config user.email tester@example.com
+  printf 'before\n' > "$divergent_directory/active-only.txt"
+  git -C "$divergent_directory" add active-only.txt
+  git -C "$divergent_directory" commit -qm 'existing local history'
+  printf 'current staged content\n' > "$divergent_directory/active-only.txt"
+  git -C "$divergent_directory" add active-only.txt
+  divergent_file_before="$(cat "$divergent_directory/active-only.txt")"
+  saved_prompt_function="$(declare -f advanced_prompt_yes_no)"
+  advanced_prompt_yes_no() {
+    return 0
+  }
+  if history_link_working_directory "$divergent_directory"; then
+    assert_equal "$divergent_file_before" "$(cat "$divergent_directory/active-only.txt")" "reconnecting unrelated history preserves current project files"
+    assert_equal "$local_head" "$(git -C "$divergent_directory" rev-parse HEAD)" "unrelated local history reconnects to rebuilt main after confirmation"
+    if git -C "$divergent_directory" diff --cached --quiet &&
+       git -C "$divergent_directory" status --short | grep -Fq '?? active-only.txt'; then
+      pass "reconnecting history returns staged content to ordinary uncommitted changes"
+    else
+      fail_test "reconnecting history returns staged content to ordinary uncommitted changes"
+    fi
+  else
+    fail_test "reconnecting unrelated history preserves current project files"
+    fail_test "unrelated local history reconnects to rebuilt main after confirmation"
+    fail_test "reconnecting history returns staged content to ordinary uncommitted changes"
+  fi
+
   unrelated_commit="$(
     printf 'Release 3.0.0\n' |
       git -C "$HISTORY_WORK_DIRECTORY" commit-tree \
         "$(git -C "$HISTORY_WORK_DIRECTORY" rev-parse 'HEAD^{tree}')"
   )"
   git -C "$HISTORY_WORK_DIRECTORY" update-ref refs/heads/main "$unrelated_commit"
-  saved_prompt_function="$(declare -f advanced_prompt_yes_no)"
-  advanced_prompt_yes_no() {
-    return 0
-  }
   HISTORY_CREATE_TAGS=false
   if history_publish_repository; then
     remote_head="$(git --git-dir="$remote" rev-parse refs/heads/main)"
@@ -1585,7 +1715,7 @@ test_project_release_policy() {
 
   english_version="$(sed -nE 's/^## ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' "$PROJECT_DIRECTORY/CHANGELOG.md" | sed -n '1p')"
   chinese_version="$(sed -nE 's/^## ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' "$PROJECT_DIRECTORY/CHANGELOG_zh.md" | sed -n '1p')"
-  assert_equal "3.5.1" "$english_version" "English changelog declares release 3.5.1"
+  assert_equal "3.6.1" "$english_version" "English changelog declares release 3.6.1"
   assert_equal "$english_version" "$chinese_version" "English and Chinese changelogs declare the same release"
   if [[ "$english_version" != *4* ]] &&
      [[ "$english_version" =~ ^[1-9][0-9]*\.[1-9][0-9]*\.[1-9][0-9]*$ ]]; then
@@ -1680,6 +1810,32 @@ test_user_interface_symbols() {
     pass "both README versions explain the shared menu and pagination rules"
   else
     fail_test "both README versions explain the shared menu and pagination rules"
+  fi
+
+  if grep -Fq 'Discover and import GitHub accounts through SSH' "$script_file" &&
+     grep -Fq '通过 SSH 识别并导入现有 GitHub 账号' "$script_file" &&
+     grep -Fq 'Check this project locally' "$script_file" &&
+     grep -Fq '核对当前项目的本机设置' "$script_file"; then
+    pass "ordinary local checks and optional online diagnostics are separated in both interfaces"
+  else
+    fail_test "ordinary local checks and optional online diagnostics are separated in both interfaces"
+  fi
+
+  if ! grep -Fq 'curl ' "$script_file" &&
+     ! grep -Fq 'SEARCH_ROOT=' "$launcher_file" &&
+     ! grep -Fq 'command -v git-auto.sh' "$launcher_file"; then
+    pass "ordinary setup and the lightweight launcher avoid optional network and directory-wide discovery"
+  else
+    fail_test "ordinary setup and the lightweight launcher avoid optional network and directory-wide discovery"
+  fi
+
+  if grep -Fq 'Fast, convenient, and simple is also the implementation rule.' "$PROJECT_DIRECTORY/README.md" &&
+     grep -Fq '“快速、方便、简洁”同时也是技术实现规范。' "$PROJECT_DIRECTORY/README_zh.md" &&
+     grep -Fq 'existing, normally non-empty working directory' "$PROJECT_DIRECTORY/README.md" &&
+     grep -Fq '现有且通常并非空白的日常工作目录' "$PROJECT_DIRECTORY/README_zh.md"; then
+    pass "both README versions document the engineering rule and non-empty history handoff"
+  else
+    fail_test "both README versions document the engineering rule and non-empty history handoff"
   fi
 }
 

@@ -54,9 +54,6 @@ for GIT_AUTO_MODULE in "${GIT_AUTO_MODULES[@]}"; do
       "[错误] 缺少程序运行所需的模块：$ENGINE_DIRECTORY/src/$GIT_AUTO_MODULE" >&2
     exit 1
   fi
-done
-
-for GIT_AUTO_MODULE in "${GIT_AUTO_MODULES[@]}"; do
   # shellcheck source=/dev/null
   source "$ENGINE_DIRECTORY/src/$GIT_AUTO_MODULE" || exit 1
 done

@@ -192,7 +192,7 @@ update_resolve_identity_file() {
   advanced_info \
     "Looking for the account key already configured on this computer..." \
     "正在查找这台电脑上已经配置好的账号密钥……"
-  if find_verified_identity_for_username "$expected_username" "$saved_alias"; then
+  if find_local_identity_for_username "$expected_username" "$saved_alias"; then
     UPDATE_IDENTITY_FILE="$FOUND_IDENTITY_FILE"
     UPDATE_OLD_ALIAS="$FOUND_SSH_ALIAS"
     return 0
@@ -202,8 +202,8 @@ update_resolve_identity_file() {
     "No existing private key for this account was found through the repository settings, origin SSH Host, or ~/.ssh/config." \
     "从当前仓库设置、origin 使用的 SSH 主机名以及 ~/.ssh/config 中，都没有找到这个账号原来使用的私钥。"
   advanced_muted \
-    "Run ./$SCRIPT_NAME menu and choose Verify accounts and current project before retrying update." \
-    "请先运行 ./$SCRIPT_NAME menu，选择“核对账号和当前项目”，完成密钥检查后再重试 update。"
+    "Run ./$SCRIPT_NAME first so the project can save its local owner and SSH key binding, then retry update." \
+    "请先运行 ./${SCRIPT_NAME}，让当前项目保存仓库所属账号与 SSH 密钥的本机绑定，再重试 update。"
   return 1
 }
 
@@ -481,7 +481,6 @@ run_update_command() {
   elif [ "$selection_status" -ne 0 ]; then
     return 1
   fi
-
   advanced_heading "Current project" "当前项目信息"
   advanced_muted \
     "Account: $UPDATE_OLD_USERNAME" \
@@ -491,7 +490,7 @@ run_update_command() {
     "仓库：${UPDATE_OLD_OWNER}/${UPDATE_OLD_REPOSITORY}"
   advanced_muted \
     "This flow assumes the change is already complete on GitHub and now synchronizes this computer." \
-    "这里会按照 GitHub 上已经完成的更名，同步并核对这台电脑上的设置。"
+    "这里会按照 GitHub 上已经完成的更名，同步这台电脑上的设置。"
 
   advanced_heading "What changed?" "需要同步哪项改名？"
   if [ "$ADVANCED_LANGUAGE" = "en" ]; then
@@ -554,14 +553,15 @@ run_update_command() {
   fi
 
   update_resolve_identity_file "$UPDATE_NEW_USERNAME" || return 1
-  update_verify_identity "$UPDATE_NEW_USERNAME" || return 1
   update_prepare_alias "$username_changed" || {
     advanced_error \
       "An unused SSH Host name for the existing key could not be selected." \
       "无法为现有密钥找到不冲突的 SSH 主机名。"
     return 1
   }
-  update_verify_repository || return 1
+  advanced_info \
+    "No online precheck is run during update. This command changes only local settings; the next git push will return GitHub's actual account and repository result." \
+    "update 不会提前联网核对。这个命令只修改本机设置；下次执行 git push 时，再以 GitHub 对账号和仓库返回的实际结果为准。"
 
   advanced_heading "Review the local settings that will change" "核对即将修改的本机设置"
   advanced_muted \
@@ -608,8 +608,8 @@ run_update_command() {
   fi
 
   advanced_success \
-    "Saved the verified username, repository address, commit author, SSH key, and origin in the local configuration files shown above." \
-    "已把核对无误的用户名、仓库地址、提交作者、SSH 密钥和 origin 保存到上面列出的本机配置文件中。"
+    "Saved the requested username, repository address, commit author, SSH key, and origin in the local configuration files shown above." \
+    "已把指定的用户名、仓库地址、提交作者、SSH 密钥和 origin 保存到上面列出的本机配置文件中。"
   if [ "$username_changed" = "yes" ] && [ -n "$UPDATE_OLD_ALIAS" ]; then
     advanced_muted \
       "The previous SSH Host entry was kept so other local projects that reference it continue to work." \

@@ -1386,7 +1386,6 @@ history_confirm_tag_conflicts() {
 
 history_push_main_branch() {
   local initial_oid="$HISTORY_REMOTE_MAIN_OID"
-  local expected_oid=""
 
   if [ -z "$initial_oid" ]; then
     advanced_info \
@@ -1411,20 +1410,8 @@ history_push_main_branch() {
     return 2
   fi
 
-  if ! run_git_with_identity "$BOUND_IDENTITY_FILE" fetch -q origin \
-    +refs/heads/main:refs/remotes/origin/main; then
-    return 1
-  fi
-  expected_oid="$(git -C "$GIT_ROOT" rev-parse refs/remotes/origin/main 2>/dev/null || true)"
-  if [ -z "$expected_oid" ] || [ "$expected_oid" != "$initial_oid" ]; then
-    advanced_error \
-      "Remote main changed during confirmation. Nothing was overwritten; run the check again." \
-      "确认期间远端 main 已发生变化；当前没有覆盖任何内容，请重新检查。"
-    return 1
-  fi
-
   run_git_with_identity "$BOUND_IDENTITY_FILE" push -u \
-    "--force-with-lease=refs/heads/main:$expected_oid" \
+    "--force-with-lease=refs/heads/main:$initial_oid" \
     origin main:main
 }
 
@@ -1432,14 +1419,13 @@ history_push_tags() {
   local index=0
   local tag=""
   local expected_oid=""
+  local push_arguments=(push)
+  local push_refspecs=()
 
   [ "$HISTORY_CREATE_TAGS" = true ] || return 0
   while [ "$index" -lt "$HISTORY_NEW_TAG_COUNT" ]; do
     tag="${HISTORY_NEW_TAGS[$index]}"
-    if ! run_git_with_identity "$BOUND_IDENTITY_FILE" push origin \
-      "refs/tags/$tag:refs/tags/$tag" >/dev/null; then
-      return 1
-    fi
+    push_refspecs+=("refs/tags/$tag:refs/tags/$tag")
     index=$((index + 1))
   done
 
@@ -1448,15 +1434,14 @@ history_push_tags() {
     while [ "$index" -lt "$HISTORY_CONFLICT_TAG_COUNT" ]; do
       tag="${HISTORY_CONFLICT_TAGS[$index]}"
       expected_oid="${HISTORY_CONFLICT_TAG_REMOTE_OIDS[$index]}"
-      if ! run_git_with_identity "$BOUND_IDENTITY_FILE" push \
-        "--force-with-lease=refs/tags/$tag:$expected_oid" \
-        origin "refs/tags/$tag:refs/tags/$tag" >/dev/null; then
-        return 1
-      fi
+      push_arguments+=("--force-with-lease=refs/tags/$tag:$expected_oid")
+      push_refspecs+=("refs/tags/$tag:refs/tags/$tag")
       index=$((index + 1))
     done
   fi
-  return 0
+  [ "${#push_refspecs[@]}" -gt 0 ] || return 0
+  run_git_with_identity "$BOUND_IDENTITY_FILE" \
+    "${push_arguments[@]}" origin "${push_refspecs[@]}" >/dev/null
 }
 
 history_publish_repository() {
@@ -1489,6 +1474,208 @@ history_publish_repository() {
     return 1
   fi
   return 0
+}
+
+history_directory_is_release_source() {
+  local directory="$1"
+  local index=0
+
+  while [ "$index" -lt "$HISTORY_RELEASE_COUNT" ]; do
+    if [ "$directory" -ef "${HISTORY_RELEASE_DIRECTORIES[$index]}" ]; then
+      return 0
+    fi
+    index=$((index + 1))
+  done
+  return 1
+}
+
+history_link_working_directory() (
+  local target="$1"
+  local existing_root=""
+  local current_branch=""
+  local current_head=""
+  local rebuilt_head=""
+  local has_commits=false
+  local needs_reset=true
+  local histories_diverged=false
+  local launcher_file="$target/g.sh"
+
+  if existing_root="$(git -C "$target" rev-parse --show-toplevel 2>/dev/null)"; then
+    existing_root="$({ cd "$existing_root" 2>/dev/null && pwd -P; } || return 1)"
+    if [ ! "$existing_root" -ef "$target" ]; then
+      advanced_error \
+        "The selected folder is inside another Git repository whose root is $existing_root." \
+        "所选文件夹位于另一个 Git 仓库中；该仓库的根目录是 ${existing_root}。"
+      return 1
+    fi
+  else
+    advanced_info \
+      "This existing working directory has no Git metadata, so git init will create it without changing project files." \
+      "这个现有工作目录还没有 Git 记录；接下来会执行 git init，但不会改动任何项目文件。"
+    git -C "$target" init -q || return 1
+  fi
+
+  GIT_ROOT="$target"
+  SCRIPT_DIRECTORY="$target"
+  SCRIPT_NAME="g.sh"
+  if git_operation_in_progress; then
+    advanced_error \
+      "A Git operation is unfinished in this working directory. Finish or cancel it before linking rebuilt history." \
+      "这个工作目录中还有未完成的 Git 操作。请先完成或取消，再衔接重建历史。"
+    return 1
+  fi
+
+  current_branch="$(git -C "$target" branch --show-current 2>/dev/null || true)"
+  if git -C "$target" rev-parse --verify HEAD >/dev/null 2>&1; then
+    has_commits=true
+    current_head="$(git -C "$target" rev-parse HEAD)"
+    if [ -z "$current_branch" ]; then
+      advanced_error \
+        "The working directory is in detached HEAD state. Switch to its working branch before linking rebuilt history." \
+        "当前工作目录处于 detached HEAD 状态。请先切换到日常使用的分支，再衔接重建历史。"
+      return 1
+    fi
+  fi
+
+  if [ "$current_branch" != "main" ] &&
+     git -C "$target" show-ref --verify --quiet refs/heads/main; then
+    advanced_error \
+      "This repository already has a different main branch. Switch to the intended branch and retry." \
+      "当前仓库已经存在另一条 main 分支。请先切换到需要继续使用的分支，再重试。"
+    return 1
+  fi
+
+  if [ -e "$launcher_file" ] && ! launcher_is_managed "$launcher_file"; then
+    advanced_muted \
+      "The existing g.sh was not created by git-auto and must be replaced before this project can use the central workflow." \
+      "当前 g.sh 不是由 git-auto 创建的；需要替换后，这个项目才能使用中央流程。"
+    if ! advanced_prompt_yes_no \
+      "Replace the existing g.sh with the lightweight launcher?" \
+      "要用轻量启动器替换现有 g.sh 吗？" \
+      "yes"; then
+      return 1
+    fi
+  fi
+
+  rebuilt_head="$(git -C "$HISTORY_WORK_DIRECTORY" rev-parse refs/heads/main)" || return 1
+  git -C "$target" fetch -q "$HISTORY_WORK_DIRECTORY" \
+    refs/heads/main:refs/git-auto/rebuilt-main || return 1
+  trap 'git -C "$target" update-ref -d refs/git-auto/rebuilt-main >/dev/null 2>&1 || true' EXIT
+
+  if [ "$has_commits" = true ]; then
+    if git -C "$target" merge-base --is-ancestor refs/git-auto/rebuilt-main HEAD; then
+      needs_reset=false
+    elif ! git -C "$target" merge-base --is-ancestor HEAD refs/git-auto/rebuilt-main; then
+      histories_diverged=true
+    fi
+  fi
+
+  if [ "$histories_diverged" = true ]; then
+    advanced_heading "Reconnect the existing local history" "衔接现有本地记录"
+    advanced_muted "Current local commit: $current_head" "当前本地提交：$current_head"
+    advanced_muted "Rebuilt main commit: $rebuilt_head" "重建后的 main 提交：$rebuilt_head"
+    advanced_muted \
+      "The two histories are different. Reconnecting keeps every working-directory file, moves the current branch to rebuilt main, and changes staged files back to ordinary uncommitted changes." \
+      "两套提交记录并不相连。继续后会保留工作目录中的全部文件，把当前分支改接到重建后的 main，并将已经暂存的改动恢复为普通未提交改动。"
+    if ! advanced_prompt_yes_no \
+      "Reconnect this working directory to rebuilt main now?" \
+      "现在把这个工作目录衔接到重建后的 main 吗？" \
+      "yes"; then
+      advanced_warn \
+        "The remote history remains published, but this working directory was not changed." \
+        "重建历史已经上传，但没有修改这个工作目录。"
+      return 2
+    fi
+  fi
+
+  if [ "$needs_reset" = true ]; then
+    git -C "$target" reset --mixed refs/git-auto/rebuilt-main >/dev/null || return 1
+  fi
+  current_branch="$(git -C "$target" branch --show-current 2>/dev/null || true)"
+  if [ "$current_branch" != "main" ]; then
+    git -C "$target" branch -M main || return 1
+  fi
+
+  save_project_binding || return 1
+  write_project_launcher "$target" || return 1
+  git -C "$target" update-ref refs/remotes/origin/main "$rebuilt_head" || return 1
+  git -C "$target" config --local branch.main.remote origin || return 1
+  git -C "$target" config --local branch.main.merge refs/heads/main || return 1
+  return 0
+)
+
+history_prepare_working_directory() {
+  local default_directory="$SCRIPT_DIRECTORY"
+  local input=""
+  local target=""
+  local link_status=0
+
+  advanced_heading "Prepare the current working directory" "衔接当前工作目录"
+  advanced_muted \
+    "The normal working directory is expected to contain the current project files and may be non-empty. No file will be copied over, deleted, or replaced." \
+    "日常工作目录通常已经包含当前项目文件，也可以是非空目录。脚本不会复制覆盖、删除或替换其中的任何文件。"
+  advanced_muted \
+    "Git will connect that directory to the rebuilt main history. Differences from the latest historical release remain as ordinary uncommitted changes for the next ./g.sh run." \
+    "脚本只会让该目录衔接重建后的 main 历史；相对最后一个历史版本的文件差异会保留为普通未提交改动，之后可直接运行 ./g.sh。"
+  if ! advanced_prompt_yes_no \
+    "Connect the current working directory now?" \
+    "现在衔接日常工作目录吗？" \
+    "yes"; then
+    advanced_warn \
+      "The remote history remains published. This working directory was not changed." \
+      "重建历史已经上传；当前工作目录没有发生变化。"
+    return 0
+  fi
+
+  if [ "$default_directory" -ef "$ENGINE_DIRECTORY" ]; then
+    default_directory=""
+  fi
+  while true; do
+    input="$(advanced_prompt_value \
+      "Existing working directory" \
+      "现有工作目录" \
+      "$default_directory")" || return 1
+    if ! normalize_history_directory_input "$input"; then
+      advanced_warn \
+        "Choose the existing folder that contains the current project files." \
+        "请选择已经包含当前项目文件的现有文件夹。"
+      continue
+    fi
+    target="$HISTORY_NORMALIZED_DIRECTORY"
+    if [ "$target" -ef "$ENGINE_DIRECTORY" ]; then
+      advanced_warn \
+        "The central git-auto folder cannot also be this project's working directory." \
+        "git-auto 中央程序文件夹不能同时作为这个项目的工作目录。"
+      continue
+    fi
+    if history_directory_is_release_source "$target"; then
+      advanced_warn \
+        "Choose the active project folder, not one of the read-only historical release folders." \
+        "请选择持续开发使用的项目文件夹，不要选择只读的历史版本存档。"
+      continue
+    fi
+    break
+  done
+
+  history_link_working_directory "$target" || link_status=$?
+  if [ "$link_status" -eq 2 ]; then
+    return 0
+  elif [ "$link_status" -ne 0 ]; then
+    advanced_error \
+      "The working directory could not be linked completely. Its project files were not overwritten; the temporary rebuilt repository was kept for inspection." \
+      "工作目录未能完整衔接。现有项目文件没有被覆盖；重建后的临时仓库已保留，便于检查。"
+    return 1
+  fi
+
+  advanced_success \
+    "Working directory linked to rebuilt main: $target" \
+    "工作目录已衔接到重建后的 main：$target"
+  advanced_muted \
+    "Continue there with: cd \"$target\" && ./g.sh" \
+    "以后进入该目录并运行：cd \"$target\" && ./g.sh"
+  advanced_muted \
+    "Any current file differences remain uncommitted and will be handled by the normal ./g.sh flow." \
+    "当前文件与最后一个历史版本之间的差异仍保持未提交状态，后续由普通 ./g.sh 流程处理。"
 }
 
 run_historical_release_import() {
@@ -1684,6 +1871,13 @@ Choose No: Do not assign historical dates; each commit keeps the local system ti
     return "$publish_status"
   fi
 
+  if ! history_prepare_working_directory; then
+    advanced_muted \
+      "Temporary repository kept at: $HISTORY_WORK_DIRECTORY" \
+      "临时仓库已保留：$HISTORY_WORK_DIRECTORY"
+    return 1
+  fi
+
   advanced_success \
     "Historical releases were uploaded successfully." \
     "历史版本已按顺序重建并上传。"
@@ -1736,6 +1930,9 @@ run_advanced_menu() {
       else
         printf '  2) Add version tags when rebuilding history: Off\n'
       fi
+      printf '  3) Discover and import GitHub accounts through SSH\n'
+      printf '  4) Verify saved account SSH keys with GitHub\n'
+      printf '  5) Verify the current project with GitHub\n'
       printf '  0) Return\n'
     else
       printf '  1) 用历史版本文件夹重建 Git 历史\n'
@@ -1744,6 +1941,9 @@ run_advanced_menu() {
       else
         printf '  2) 重建历史时添加版本标记：已关闭\n'
       fi
+      printf '  3) 通过 SSH 识别并导入现有 GitHub 账号\n'
+      printf '  4) 联网核对已保存账号的 SSH 密钥\n'
+      printf '  5) 联网核对当前项目\n'
       printf '  0) 返回\n'
     fi
     choice="$(advanced_prompt_value "Choose" "选择" "1")" || return 1
@@ -1754,6 +1954,18 @@ run_advanced_menu() {
         ;;
       2)
         history_tags_setting_menu || true
+        ;;
+      3)
+        import_existing_accounts_online || true
+        advanced_pause
+        ;;
+      4)
+        check_private_accounts || true
+        advanced_pause
+        ;;
+      5)
+        verify_current_project_online || true
+        advanced_pause
         ;;
       0)
         return 0

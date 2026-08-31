@@ -6,6 +6,32 @@
 
 All notable changes to Auto Script for GitHub Setup and Push are documented in this file.
 
+## 3.6.1 - 2026-09-01
+
+### Changed
+
+- Made “fast, convenient, and simple; never complicate a simple problem” an explicit engineering rule as well as a product rule. Ordinary commands now reuse complete local state and perform no optional online precheck before the required `git push`.
+- Removed `curl`, `ssh -T`, and `git ls-remote` from ordinary account setup, project binding, local project checks, and `./g.sh update`. Account and repository results now come from the actual `git push` when a push is needed.
+- Added explicit Advanced features for discovering and importing existing SSH accounts, verifying saved account keys with GitHub, and running SSH plus read-only repository diagnostics for the current project.
+- Changed ordinary account setup to reuse only an explicit saved project key or a username-based `github-USERNAME` SSH Host. Missing identities receive a separate key after confirmation; advanced import can verify older aliases and add a stable username-based alias without replacing the old one.
+- Made commit-email suggestions fully local and removed the GitHub API lookup. `ssh-keygen` is now required only when the selected flow actually creates a key.
+- Simplified `g.sh` engine resolution to the explicit environment override, the repository-local saved path, the same-folder central engine, or one pasted path. It no longer searches ancestor folders, common home locations, or `PATH`.
+- Combined central module validation and loading into one dispatcher pass. Changed project account menu actions to bind only the repository owner, and made local project checks validate the complete owner/key/origin binding instead of only a saved username.
+- Made `./g.sh update` a local-only synchronization flow for changes already completed on GitHub. It continues to reuse the existing key, normalize the new username alias, and review every local setting before writing.
+- Historical reconstruction now offers to connect rebuilt `main` to the existing, normally non-empty working directory after publication. It preserves every current file, runs `git init` only when Git metadata is absent, asks before replacing unrelated local history, leaves current differences uncommitted with a mixed reset, installs `g.sh`, and saves the owner/key/origin binding for the next normal push.
+- Batched historical version tags into one push and removed the redundant fetch before replacing remote `main`; exact `--force-with-lease` values still reject any concurrent remote change atomically.
+
+### Fixed
+
+- Prevented the project-check menu from reporting a repository as ready when only its username matched but its exact key, SSH Host, fetch URL, or push URL was missing or inconsistent.
+- Corrected launcher documentation that still described directory-wide engine searches removed from the lightweight implementation.
+- Kept force-with-lease options before the remote name in the new batched tag push so Git parses them as options rather than refspecs.
+
+### Tests
+
+- Added regression coverage for local-only account selection, incomplete binding repair without online calls, username and repository updates without prechecks, batched tag pushes, and strict Advanced-menu network boundaries.
+- Added integration coverage for linking rebuilt history into both a non-empty directory without Git metadata and a non-empty repository with unrelated local history, including file preservation, mixed-reset behavior, launcher installation, and future `./g.sh` readiness.
+
 ## 3.5.1 - 2026-08-31
 
 ### Changed

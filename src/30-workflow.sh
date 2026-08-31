@@ -22,7 +22,7 @@ require_core_commands() {
   local missing=""
   local command_name=""
 
-  for command_name in git ssh ssh-keygen awk sed find; do
+  for command_name in git ssh awk sed find; do
     if ! command_exists "$command_name"; then
       missing="$missing $command_name"
     fi
@@ -330,8 +330,8 @@ select_account_for_repository() {
     "The destination is $owner/${CURRENT_REPOSITORY_NAME}. To prevent accounts from being mixed, this repository must use GitHub account $owner." \
     "目标仓库是 ${owner}/${CURRENT_REPOSITORY_NAME}。为避免多个账号相互串用，当前仓库必须使用 GitHub 账号 ${owner}。"
   muted \
-    "Only the commit email is needed. The script will reuse or create an SSH key only after GitHub confirms that it belongs to exactly $owner." \
-    "现在只需确认提交邮箱。只有 GitHub 确认密钥确实属于 ${owner} 后，脚本才会沿用现有密钥或创建新密钥。"
+    "Only the commit email is needed. The script uses a local SSH Host named for $owner, or creates a separate one when none exists." \
+    "现在只需确认提交邮箱。脚本会使用按账号 ${owner} 命名的本机 SSH 主机；没有对应配置时，再为该账号创建独立密钥。"
   email="$(prompt_account_email "$owner")" || return 1
   setup_or_reuse_account "$owner" "$email" || return 1
   BOUND_USERNAME="$SELECTED_USERNAME"
@@ -396,7 +396,7 @@ load_established_project_binding() {
   return 0
 }
 
-ensure_bound_identity() {
+ensure_bound_identity_with_github_verification() {
   local preferred_alias=""
   local saved_key=""
   local verification_detail=""
@@ -519,8 +519,8 @@ ensure_bound_identity() {
     "Continuing will create $(human_path "$NEW_IDENTITY_FILE") and add SSH Host $NEW_SSH_ALIAS to ~/.ssh/config." \
     "如果继续，脚本将创建 $(human_path "$NEW_IDENTITY_FILE")，并在 ~/.ssh/config 中加入 SSH 主机名 ${NEW_SSH_ALIAS}。"
   muted \
-    "The public key will be shown for you to add to GitHub. No commit or push will run until GitHub confirms that the key belongs to exactly $BOUND_USERNAME." \
-    "随后会显示公钥，供你添加到 GitHub。只有 GitHub 确认该密钥对应的账号正是 $BOUND_USERNAME 后，脚本才会继续提交和上传。"
+    "The public key will be shown for you to add to GitHub. This advanced path verifies the new key before it returns." \
+    "随后会显示公钥，供你添加到 GitHub。这条高级流程会在返回前联网核对新密钥。"
   if ! ui_prompt_yes_no \
     "Create and configure this separate SSH key now?" \
     "现在创建并配置这把独立的 SSH 密钥吗？" \
@@ -531,12 +531,37 @@ ensure_bound_identity() {
     return 1
   fi
 
-  if create_new_identity "$BOUND_USERNAME" "$BOUND_EMAIL"; then
+  if create_new_identity "$BOUND_USERNAME" "$BOUND_EMAIL" &&
+     verify_key_matches_username "$FOUND_IDENTITY_FILE" "$BOUND_USERNAME"; then
     BOUND_SSH_ALIAS="$FOUND_SSH_ALIAS"
     BOUND_IDENTITY_FILE="$FOUND_IDENTITY_FILE"
     return 0
   fi
   return 1
+}
+
+ensure_bound_identity() {
+  local saved_username=""
+  local preferred_alias=""
+
+  saved_username="$(git -C "$GIT_ROOT" config --local --get github-auto.username 2>/dev/null || true)"
+  if [ "$(lowercase "$saved_username")" = "$(lowercase "$BOUND_USERNAME")" ]; then
+    preferred_alias="$(git -C "$GIT_ROOT" config --local --get github-auto.ssh-alias 2>/dev/null || true)"
+  fi
+
+  if find_local_identity_for_username "$BOUND_USERNAME" "$preferred_alias"; then
+    BOUND_SSH_ALIAS="$FOUND_SSH_ALIAS"
+    BOUND_IDENTITY_FILE="$FOUND_IDENTITY_FILE"
+    info \
+      "Using the local SSH key assigned to account $BOUND_USERNAME. No online identity precheck is run; git push will return GitHub's actual result." \
+      "正在使用本机为账号 ${BOUND_USERNAME} 指定的 SSH 密钥。这里不会提前联网核对；执行 git push 时，再以 GitHub 的实际返回结果为准。"
+    return 0
+  fi
+
+  setup_or_reuse_account "$BOUND_USERNAME" "$BOUND_EMAIL" || return 1
+  BOUND_SSH_ALIAS="$FOUND_SSH_ALIAS"
+  BOUND_IDENTITY_FILE="$FOUND_IDENTITY_FILE"
+  return 0
 }
 
 save_project_binding() {
@@ -641,6 +666,7 @@ verify_repository_access() {
 
 configure_project() {
   local preferred_username="${1:-}"
+  local purpose="${2:-push}"
   local proposed_remote_url=""
 
   if read_origin_repository; then
@@ -657,8 +683,8 @@ configure_project() {
       "This local Git repository has no origin that identifies a GitHub repository." \
       "这个本地 Git 仓库还没有能够识别为 GitHub 仓库的 origin。"
     muted \
-      "Paste the GitHub repository that should receive this existing local history. No files will be uploaded until the address and account access are verified." \
-      "请粘贴这个现有本地仓库应当上传到的 GitHub 仓库地址；在地址和账号权限核对完成前，不会上传任何文件。"
+      "Paste the GitHub repository that should receive this existing local history. Nothing is uploaded until the final git push." \
+      "请粘贴这个现有本地仓库应当上传到的 GitHub 仓库地址；只有最后执行 git push 时才会上传。"
     if ! prompt_repository; then
       return 1
     fi
@@ -684,9 +710,15 @@ configure_project() {
       "$BOUND_EMAIL" \
       "$BOUND_IDENTITY_FILE" \
       "git@${BOUND_SSH_ALIAS}:${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME}.git"
-    info \
-      "Using the saved owner account and SSH key. This run will go directly to add, commit, and push." \
-      "使用已经保存的仓库所属账号和 SSH 密钥；本次直接执行暂存、提交和上传。"
+    if [ "$purpose" = "push" ]; then
+      info \
+        "Using the saved owner account and SSH key. This run will go directly to add, commit, and push." \
+        "使用已经保存的仓库所属账号和 SSH 密钥；本次直接执行暂存、提交和上传。"
+    else
+      success \
+        "This project is already bound to its GitHub owner and exact SSH key." \
+        "当前项目已经绑定到仓库所属账号及其指定 SSH 密钥，无需修改。"
+    fi
     return 0
   fi
 
@@ -699,7 +731,7 @@ configure_project() {
 
   proposed_remote_url="git@${BOUND_SSH_ALIAS}:${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME}.git"
 
-  heading "Verify the exact GitHub destination" "核对准确的 GitHub 上传目标"
+  heading "Confirm the GitHub upload target" "确认 GitHub 上传目标"
   github_target_summary \
     normal \
     "$BOUND_USERNAME" \
@@ -710,13 +742,11 @@ configure_project() {
     "$BOUND_IDENTITY_FILE" \
     "$proposed_remote_url"
 
-  verify_repository_access yes "$proposed_remote_url" || return 1
-
   if [ -n "$CURRENT_ORIGIN_URL" ] && [ "$CURRENT_ORIGIN_URL" != "$proposed_remote_url" ]; then
     technical_detail \
       normal \
-      "origin will change from $CURRENT_ORIGIN_URL to $proposed_remote_url so future fetches and pushes use the verified account." \
-      "为确保以后拉取和推送都使用核对无误的账号，origin 将从 ${CURRENT_ORIGIN_URL} 更新为 ${proposed_remote_url}。"
+      "origin will change from $CURRENT_ORIGIN_URL to $proposed_remote_url so future fetches and pushes use the selected owner account." \
+      "origin 将从 ${CURRENT_ORIGIN_URL} 更新为 ${proposed_remote_url}，以后拉取和推送都会使用所选的仓库所属账号。"
   elif [ -z "$CURRENT_ORIGIN_URL" ]; then
     technical_detail \
       normal \
@@ -725,8 +755,8 @@ configure_project() {
   else
     technical_detail \
       normal \
-      "The existing origin already uses the verified account and will not change." \
-      "现有 origin 已经使用核对无误的账号，不需要修改。"
+      "The existing origin already uses the selected owner account and will not change." \
+      "现有 origin 已经使用所选的仓库所属账号，不需要修改。"
   fi
 
   if ! save_project_binding; then
@@ -935,8 +965,8 @@ explain_push_failure() {
       ;;
     *permission\ denied*|*publickey*|*repository\ not\ found*|*write\ access*)
       muted \
-        "GitHub rejected this repository or SSH identity. Run ./$SCRIPT_NAME menu and verify the current project, then confirm that ${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME} exists under account $BOUND_USERNAME." \
-        "GitHub 拒绝了当前仓库或 SSH 身份。请运行 ./${SCRIPT_NAME} menu 核对当前项目，并确认 ${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME} 确实位于账号 ${BOUND_USERNAME} 名下。"
+        "GitHub rejected this repository or SSH identity. Open ./$SCRIPT_NAME menu, choose Advanced features, then verify the current project; also confirm that ${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME} exists under account $BOUND_USERNAME." \
+        "GitHub 拒绝了当前仓库或 SSH 身份。请运行 ./${SCRIPT_NAME} menu，进入“高级功能”后选择“联网核对当前项目”，并确认 ${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME} 确实位于账号 ${BOUND_USERNAME} 名下。"
       ;;
     *could\ not\ resolve\ hostname*|*connection\ timed\ out*|*connection\ reset*|*network\ is\ unreachable*|*remote\ end\ hung\ up*)
       muted \

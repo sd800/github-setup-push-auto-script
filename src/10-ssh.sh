@@ -382,6 +382,95 @@ find_verified_identity_for_username() {
   return 1
 }
 
+find_local_identity_for_username() {
+  local username="$1"
+  local preferred_alias="${2:-}"
+  local username_lc=""
+  local alias=""
+  local key=""
+  local index=0
+  local pass=0
+
+  FOUND_SSH_ALIAS=""
+  FOUND_IDENTITY_FILE=""
+  username_lc="$(lowercase "$username")"
+  scan_ssh_aliases || return 1
+
+  while [ "$pass" -lt 2 ]; do
+    index=0
+    while [ "$index" -lt "$DISCOVERED_SSH_ALIAS_COUNT" ]; do
+      alias="${DISCOVERED_SSH_ALIASES[$index]}"
+      index=$((index + 1))
+      if [ "$pass" -eq 0 ]; then
+        [ -n "$preferred_alias" ] &&
+          [ "$(lowercase "$alias")" = "$(lowercase "$preferred_alias")" ] || continue
+      else
+        case "$(lowercase "$alias")" in
+          "github-$username_lc"|"github-$username_lc-"[0-9]*)
+            ;;
+          *)
+            continue
+            ;;
+        esac
+      fi
+      ssh_alias_is_github "$alias" || continue
+      key="$(resolve_alias_identity_file "$alias" || true)"
+      [ -f "$key" ] || continue
+      FOUND_SSH_ALIAS="$alias"
+      FOUND_IDENTITY_FILE="$key"
+      return 0
+    done
+    pass=$((pass + 1))
+  done
+  return 1
+}
+
+ensure_username_alias_for_identity() {
+  local username="$1"
+  local current_alias="$2"
+  local identity_file="$3"
+  local username_lc=""
+  local alias=""
+  local key=""
+  local canonical_identity=""
+  local canonical_key=""
+  local index=0
+
+  username_lc="$(lowercase "$username")"
+  case "$(lowercase "$current_alias")" in
+    "github-$username_lc"|"github-$username_lc-"[0-9]*)
+      FOUND_SSH_ALIAS="$current_alias"
+      FOUND_IDENTITY_FILE="$identity_file"
+      return 0
+      ;;
+  esac
+
+  canonical_identity="$(canonical_existing_file "$identity_file" || true)"
+  [ -n "$canonical_identity" ] || return 1
+  scan_ssh_aliases || return 1
+  while [ "$index" -lt "$DISCOVERED_SSH_ALIAS_COUNT" ]; do
+    alias="${DISCOVERED_SSH_ALIASES[$index]}"
+    index=$((index + 1))
+    case "$(lowercase "$alias")" in
+      "github-$username_lc"|"github-$username_lc-"[0-9]*)
+        key="$(resolve_alias_identity_file "$alias" || true)"
+        canonical_key="$(canonical_existing_file "$key" || true)"
+        if [ -n "$canonical_key" ] && [ "$canonical_key" = "$canonical_identity" ]; then
+          FOUND_SSH_ALIAS="$alias"
+          FOUND_IDENTITY_FILE="$identity_file"
+          return 0
+        fi
+        ;;
+    esac
+  done
+
+  next_available_alias "$username" || return 1
+  install_ssh_alias_block "$username" "$NEW_SSH_ALIAS" "$identity_file"
+  FOUND_SSH_ALIAS="$NEW_SSH_ALIAS"
+  FOUND_IDENTITY_FILE="$identity_file"
+  return 0
+}
+
 find_github_alias_for_identity_file() {
   local identity_file="$1"
   local preferred_alias="${2:-}"
@@ -585,6 +674,12 @@ create_new_identity() {
   local email="$2"
   local public_key=""
 
+  if ! command_exists ssh-keygen; then
+    fail \
+      "ssh-keygen is required only when creating a new SSH key, but it is not available on this computer." \
+      "当前需要新建 SSH 密钥，但这台电脑上没有可用的 ssh-keygen。"
+  fi
+
   ensure_ssh_storage
   next_available_alias "$username" || fail \
     "An unused SSH Host name and key filename could not be selected." \
@@ -638,26 +733,14 @@ create_new_identity() {
   fi
 
   pause_for_user \
-    "After saving the key on GitHub, press Enter to verify: " \
-    "在 GitHub 保存密钥后，按 Enter 开始验证："
-
-  while ! verify_key_matches_username "$NEW_IDENTITY_FILE" "$username"; do
-    warn \
-      "Make sure the public key was added to the correct GitHub account." \
-      "请确认公钥添加到了正确的 GitHub 账号。"
-    if ! ui_prompt_yes_no \
-      "Verify the same key with GitHub again?" \
-      "完成检查后，要再次用同一把密钥向 GitHub 核对账号吗？" \
-      "yes"; then
-      return 1
-    fi
-  done
+    "After saving the key on GitHub, press Enter to continue: " \
+    "在 GitHub 保存密钥后，按 Enter 继续："
 
   FOUND_SSH_ALIAS="$NEW_SSH_ALIAS"
   FOUND_IDENTITY_FILE="$NEW_IDENTITY_FILE"
   success \
-    "GitHub confirmed that the new key belongs to account $username." \
-    "GitHub 已确认这把新密钥属于账号 ${username}。"
+    "The key and SSH Host are ready locally. The next git push for account $username will let GitHub accept or reject this key." \
+    "密钥和 SSH 主机名已经在本机配置完成。账号 ${username} 下次执行 git push 时，将由 GitHub 接受或拒绝这把密钥。"
   return 0
 }
 
@@ -742,44 +825,11 @@ discover_verified_github_identities() {
 default_email_for_username() {
   local username="$1"
   local configured=""
-  local response=""
-  local account_id=""
-  local canonical_login=""
 
   configured="$(account_email "$username" 2>/dev/null || true)"
   if [ -n "$configured" ]; then
     printf '%s' "$configured"
     return
-  fi
-
-  # GitHub's current private commit address uses public account ID + login.
-  # The public REST endpoint avoids asking users to find that ID manually.
-  if command_exists curl && [ "${GITHUB_AUTO_TESTING:-0}" != "1" ]; then
-    response="$(
-      curl \
-        -fsSL \
-        --connect-timeout 5 \
-        --max-time 10 \
-        -H 'Accept: application/vnd.github+json' \
-        -H 'User-Agent: auto-script-for-github-setup-and-push' \
-        "https://api.github.com/users/$username" \
-        2>/dev/null
-    )" || true
-    account_id="$(
-      printf '%s\n' "$response" |
-        sed -nE 's/^[[:space:]]*"id":[[:space:]]*([0-9]+),?.*$/\1/p' |
-        sed -n '1p'
-    )"
-    canonical_login="$(
-      printf '%s\n' "$response" |
-        sed -nE 's/^[[:space:]]*"login":[[:space:]]*"([^"]+)",?.*$/\1/p' |
-        sed -n '1p'
-    )"
-    if [ -n "$account_id" ] && [ -n "$canonical_login" ] &&
-       [ "$(lowercase "$canonical_login")" = "$(lowercase "$username")" ]; then
-      printf '%s+%s@users.noreply.github.com' "$account_id" "$canonical_login"
-      return
-    fi
   fi
 
   printf '%s@users.noreply.github.com' "$(lowercase "$username")"
@@ -836,58 +886,20 @@ register_account_and_identity() {
   FOUND_IDENTITY_FILE="$private_key"
 
   success \
-    "Saved account $username and its commit email after GitHub verified the SSH key." \
-    "GitHub 核对 SSH 密钥成功后，已保存账号 $username 及其提交邮箱。"
+    "Saved account $username, its commit email, and its local SSH key mapping." \
+    "已保存账号 ${username}、提交邮箱及其本机 SSH 密钥对应关系。"
 }
 
 setup_or_reuse_account() {
   local username="$1"
   local email="$2"
-  local identity_index=""
-  local detail=""
 
-  if identity_index="$(verified_identity_index "$username")"; then
-    register_account_and_identity \
-      "${VERIFIED_IDENTITY_USERNAMES[$identity_index]}" \
-      "$email" \
-      "${VERIFIED_IDENTITY_ALIASES[$identity_index]}" \
-      "${VERIFIED_IDENTITY_FILES[$identity_index]}"
-    return 0
-  fi
-
-  if find_verified_identity_for_username "$username"; then
+  if find_local_identity_for_username "$username"; then
+    info \
+      "Using local SSH Host $FOUND_SSH_ALIAS and its existing key for account $username. No online identity check is run; git push will provide GitHub's result when needed." \
+      "已找到按账号 ${username} 命名的本机 SSH 主机 ${FOUND_SSH_ALIAS}，将继续使用它指定的现有密钥。这里不会联网预检；需要上传时，由 git push 返回 GitHub 的实际结果。"
     register_account_and_identity "$username" "$email" "$FOUND_SSH_ALIAS" "$FOUND_IDENTITY_FILE"
     return 0
-  fi
-
-  if [ -n "$FOUND_UNVERIFIED_IDENTITY_FILE" ]; then
-    warn \
-      "The existing key $(human_path "$FOUND_UNVERIFIED_IDENTITY_FILE") could not be confirmed for account $username." \
-      "暂时无法确认现有密钥 $(human_path "$FOUND_UNVERIFIED_IDENTITY_FILE") 是否属于账号 ${username}。"
-    detail="${SSH_VERIFICATION_OUTPUT##*$'\n'}"
-    if [ -n "$detail" ]; then
-      muted "SSH result: $detail" "SSH 返回信息：$detail"
-    fi
-    muted \
-      "This can mean the network cannot reach GitHub, or that the key has not been added to this account." \
-      "这通常表示当前网络无法连接 GitHub，或这把密钥的公钥尚未添加到该账号。"
-    if ui_prompt_yes_no \
-      "Verify this existing key again before creating another key?" \
-      "要先重新验证这把现有密钥，再决定是否新建密钥吗？" \
-      "yes"; then
-      if identify_key_username "$FOUND_UNVERIFIED_IDENTITY_FILE" &&
-         [ "$(lowercase "$VERIFIED_GITHUB_USERNAME")" = "$(lowercase "$username")" ]; then
-        register_account_and_identity \
-          "$username" \
-          "$email" \
-          "$FOUND_UNVERIFIED_SSH_ALIAS" \
-          "$FOUND_UNVERIFIED_IDENTITY_FILE"
-        return 0
-      fi
-      warn \
-        "GitHub still did not confirm this key for account $username." \
-        "GitHub 仍未确认这把密钥属于账号 ${username}。"
-    fi
   fi
 
   next_available_alias "$username" || return 1
@@ -914,51 +926,16 @@ setup_or_reuse_account() {
 }
 
 run_account_setup() {
-  local index=0
   local username=""
   local email=""
-  local imported=false
 
   require_interactive
   ensure_home_available
 
   heading "Add a GitHub account" "添加 GitHub 账号"
   muted \
-    "The script first checks SSH keys already referenced by ~/.ssh/config and reuses a key only when GitHub confirms its exact username." \
-    "脚本会先检查 ~/.ssh/config 中已经引用的密钥；只有 GitHub 返回的用户名完全一致时，才会沿用现有密钥。"
-
-  discover_verified_github_identities || true
-
-  while [ "$index" -lt "$VERIFIED_IDENTITY_COUNT" ]; do
-    username="${VERIFIED_IDENTITY_USERNAMES[$index]}"
-    if ! account_index "$username" >/dev/null 2>&1; then
-      if ui_prompt_yes_no \
-        "Save account $username and its commit email in private/config.txt, and reuse its verified SSH key?" \
-        "要把账号 $username 和提交邮箱保存到 private/config.txt，并沿用刚刚验证通过的 SSH 密钥吗？" \
-        "yes"; then
-        email="$(prompt_account_email "$username")" || return 1
-        add_or_update_account "$username" "$email"
-        SELECTED_USERNAME="$username"
-        SELECTED_EMAIL="$email"
-        FOUND_SSH_ALIAS="${VERIFIED_IDENTITY_ALIASES[$index]}"
-        FOUND_IDENTITY_FILE="${VERIFIED_IDENTITY_FILES[$index]}"
-        imported=true
-      fi
-    fi
-    index=$((index + 1))
-  done
-
-  if [ "$imported" = true ]; then
-    write_accounts_to_private_config
-    success \
-      "Saved the selected existing GitHub account and commit email in private/config.txt." \
-      "已把选中的现有 GitHub 账号和提交邮箱保存到 private/config.txt。"
-    return 0
-  fi
-
-  muted \
-    "To add a different account, enter its GitHub username. You can also enter :cancel to leave account setup without changing a project." \
-    "如需添加其他账号，请输入对应的 GitHub 用户名；也可以输入 :cancel 退出账号设置，当前项目不会因此发生变化。"
+    "Enter the account once. This ordinary setup uses only local SSH configuration and does not contact GitHub for a precheck; a later git push returns the actual remote result." \
+    "只需输入一次账号信息。普通设置只处理本机 SSH 配置，不会提前联网核对；以后执行 git push 时，再以 GitHub 的实际返回结果为准。"
   username="$(prompt_github_username)"
   case "$?" in
     0)
@@ -980,7 +957,6 @@ run_account_setup() {
   fi
 
   fail \
-    "The account was not saved because SSH key verification did not finish. Any key created during this attempt remains in ~/.ssh, but no project was committed or pushed." \
-    "由于 SSH 密钥验证没有完成，本次没有保存账号。过程中已经创建的密钥会保留在 ~/.ssh 中，但没有提交或上传任何项目。"
+    "The account setup did not finish. Any key already created remains in ~/.ssh, but no project was committed or pushed." \
+    "账号设置未完成。过程中已经创建的密钥会保留在 ~/.ssh 中，但没有提交或上传任何项目。"
 }
-

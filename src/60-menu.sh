@@ -117,6 +117,8 @@ check_saved_account_identity() {
     "Checking SSH keys for GitHub account $username..." \
     "正在核对 GitHub 账号 $username 的 SSH 密钥……"
   if find_verified_identity_for_username "$username"; then
+    ensure_username_alias_for_identity \
+      "$username" "$FOUND_SSH_ALIAS" "$FOUND_IDENTITY_FILE" || return 1
     success \
       "GitHub accepted $(human_path "$FOUND_IDENTITY_FILE") as account $username through SSH Host $FOUND_SSH_ALIAS." \
       "GitHub 已确认密钥 $(human_path "$FOUND_IDENTITY_FILE") 属于账号 ${username}；对应的 SSH 主机名是 ${FOUND_SSH_ALIAS}。"
@@ -164,7 +166,46 @@ check_saved_account_identity() {
       "没有为账号 $username 创建新的 SSH 密钥。"
     return 1
   fi
-  create_new_identity "$username" "$email"
+  create_new_identity "$username" "$email" || return 1
+  verify_key_matches_username "$FOUND_IDENTITY_FILE" "$username"
+}
+
+import_existing_accounts_online() {
+  local index=0
+  local username=""
+  local email=""
+  local imported=0
+
+  require_core_commands
+  heading "Discover GitHub accounts through SSH" "通过 SSH 识别现有 GitHub 账号"
+  muted \
+    "This advanced action contacts GitHub once for each distinct key referenced by ~/.ssh/config, then offers to import confirmed accounts." \
+    "这项高级操作会用 ~/.ssh/config 中引用的每一把不同密钥分别连接 GitHub，再询问是否导入确认到的账号。"
+  discover_verified_github_identities || return 1
+  while [ "$index" -lt "$VERIFIED_IDENTITY_COUNT" ]; do
+    username="${VERIFIED_IDENTITY_USERNAMES[$index]}"
+    if account_index "$username" >/dev/null 2>&1; then
+      success \
+        "Account $username is already saved." \
+        "账号 ${username} 已经保存在 private/config.txt 中。"
+    elif ui_prompt_yes_no \
+      "Import account $username and this verified key?" \
+      "要导入账号 ${username} 及这把已经核对的密钥吗？" \
+      "yes"; then
+      email="$(prompt_account_email "$username")" || return 1
+      FOUND_SSH_ALIAS="${VERIFIED_IDENTITY_ALIASES[$index]}"
+      FOUND_IDENTITY_FILE="${VERIFIED_IDENTITY_FILES[$index]}"
+      ensure_username_alias_for_identity \
+        "$username" "$FOUND_SSH_ALIAS" "$FOUND_IDENTITY_FILE" || return 1
+      register_account_and_identity \
+        "$username" "$email" "$FOUND_SSH_ALIAS" "$FOUND_IDENTITY_FILE"
+      imported=$((imported + 1))
+    fi
+    index=$((index + 1))
+  done
+  success \
+    "Imported $imported new account(s)." \
+    "本次共导入 ${imported} 个新账号。"
 }
 
 check_private_accounts() {
@@ -177,12 +218,9 @@ check_private_accounts() {
   heading "Verify saved GitHub SSH keys" "核对已保存账号的 SSH 密钥"
   if [ "$ACCOUNT_COUNT" -eq 0 ]; then
     warn "No GitHub account has been added yet." "还没有添加 GitHub 账号。"
-    if ui_prompt_yes_no \
-      "Add a GitHub username, commit email, and verified SSH key now?" \
-      "现在添加 GitHub 用户名、提交邮箱并验证对应的 SSH 密钥吗？" \
-      "yes"; then
-      run_account_setup || return 1
-    fi
+    muted \
+      "Use Add GitHub account first, then return to this advanced online check if needed." \
+      "请先使用“添加 GitHub 账号”；如有需要，再回到这里执行高级联网核对。"
     return 0
   fi
 
@@ -219,18 +257,16 @@ run_central_menu() {
     if [ "$UI_LANGUAGE" = "zh" ]; then
       printf '  1) 为项目创建或修复 g.sh\n'
       printf '  2) 添加 GitHub 账号\n'
-      printf '  3) 核对各账号的 SSH 密钥\n'
-      printf '  4) 界面语言\n'
-      printf '  5) 显示模式\n'
-      printf '  6) 高级功能\n'
+      printf '  3) 界面语言\n'
+      printf '  4) 显示模式\n'
+      printf '  5) 高级功能\n'
       printf '  0) 退出\n'
     else
       printf '  1) Create or repair a project g.sh\n'
       printf '  2) Add a GitHub account\n'
-      printf '  3) Verify account SSH keys\n'
-      printf '  4) Interface language\n'
-      printf '  5) Display mode\n'
-      printf '  6) Advanced features\n'
+      printf '  3) Interface language\n'
+      printf '  4) Display mode\n'
+      printf '  5) Advanced features\n'
       printf '  0) Exit\n'
     fi
 
@@ -245,16 +281,12 @@ run_central_menu() {
         pause_for_user
         ;;
       3)
-        check_private_accounts || true
-        pause_for_user
-        ;;
-      4)
         language_menu || true
         ;;
-      5)
+      4)
         appearance_menu || true
         ;;
-      6)
+      5)
         run_advanced_menu || true
         ;;
       0)
@@ -368,16 +400,10 @@ language_menu() {
     "界面语言已设为中文。"
 }
 
-switch_project_account() {
-  local selection_status=0
-
+bind_project_owner() {
   require_core_commands
   if ! locate_project no; then
     warn "The current folder is not a Git project." "当前文件夹还不是 Git 项目。"
-    return 1
-  fi
-  if [ "$ACCOUNT_COUNT" -eq 0 ]; then
-    warn "No GitHub account has been added yet." "还没有 GitHub 账号，请先添加。"
     return 1
   fi
   if ! read_origin_repository; then
@@ -386,48 +412,17 @@ switch_project_account() {
       "当前项目还没有可识别的 GitHub 仓库。"
     return 1
   fi
-  select_account \
-    "Which GitHub account should this project use?" \
-    "要把当前项目切换到哪个 GitHub 账号？" || selection_status=$?
-  if [ "$selection_status" -eq 2 ]; then
-    return 0
-  elif [ "$selection_status" -ne 0 ]; then
-    return 1
-  fi
-
-  configure_project "$SELECTED_USERNAME" || return 1
+  configure_project "" bind || return 1
   success \
-    "This project now uses account ${SELECTED_USERNAME}." \
-    "当前项目已经切换到账号 ${SELECTED_USERNAME}。"
+    "This project uses its owner account, ${CURRENT_REPOSITORY_OWNER}." \
+    "当前项目使用仓库所属账号 ${CURRENT_REPOSITORY_OWNER}。"
 }
 
-check_and_repair() {
-  local index=0
+check_local_project_binding() {
   local username=""
-  local email=""
-  local missing_count=0
 
   require_core_commands
-  heading "Verify saved accounts and the current project" "核对已保存账号和当前项目"
-
-  if [ "$ACCOUNT_COUNT" -eq 0 ]; then
-    warn "No GitHub account has been added yet." "还没有 GitHub 账号。"
-    if ui_prompt_yes_no \
-      "Add a GitHub username, commit email, and verified SSH key now?" \
-      "现在添加 GitHub 用户名、提交邮箱并验证对应的 SSH 密钥吗？" \
-      "yes"; then
-      run_account_setup || return 1
-    fi
-  else
-    while [ "$index" -lt "$ACCOUNT_COUNT" ]; do
-      username="${ACCOUNT_USERNAMES[$index]}"
-      email="${ACCOUNT_EMAILS[$index]}"
-      if ! check_saved_account_identity "$username" "$email"; then
-        missing_count=$((missing_count + 1))
-      fi
-      index=$((index + 1))
-    done
-  fi
+  heading "Check this project's local GitHub settings" "核对当前项目的本机 GitHub 设置"
 
   if locate_project no; then
     success \
@@ -437,31 +432,34 @@ check_and_repair() {
       muted \
         "Current repository: ${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME}" \
         "当前仓库：${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME}"
-      username="$(git -C "$GIT_ROOT" config --local --get github-auto.username 2>/dev/null || true)"
-      if [ -n "$username" ] &&
-         [ "$(lowercase "$username")" = "$(lowercase "$CURRENT_REPOSITORY_OWNER")" ] &&
-         account_index "$username" >/dev/null 2>&1; then
+      if load_established_project_binding; then
         success \
-          "Current project account: $username" \
-          "当前项目使用的账号：$username"
+          "The current project has a complete local binding for owner account $BOUND_USERNAME and its exact SSH key." \
+          "当前项目已经完整绑定仓库所属账号 ${BOUND_USERNAME} 及其指定 SSH 密钥。"
       else
-        if [ -n "$username" ]; then
+        username="$(git -C "$GIT_ROOT" config --local --get github-auto.username 2>/dev/null || true)"
+        if [ -n "$username" ] &&
+           [ "$(lowercase "$username")" != "$(lowercase "$CURRENT_REPOSITORY_OWNER")" ]; then
           warn \
             "This repository is saved with account $username, but its GitHub owner is $CURRENT_REPOSITORY_OWNER. The mismatched account will not be used." \
             "当前仓库保存的账号是 ${username}，但 GitHub 仓库属于 ${CURRENT_REPOSITORY_OWNER}。脚本不会继续使用这个不匹配的账号。"
+        elif ! account_index "$CURRENT_REPOSITORY_OWNER" >/dev/null 2>&1; then
+          warn \
+            "Repository owner $CURRENT_REPOSITORY_OWNER has not been added to private/config.txt." \
+            "private/config.txt 中还没有保存仓库所属账号 ${CURRENT_REPOSITORY_OWNER}。"
         else
           warn \
-            "This repository has no saved GitHub account in its local .git/config." \
-            "当前仓库的本地 .git/config 中还没有保存 GitHub 账号。"
+            "The project-local owner, SSH key, or origin binding is missing or inconsistent." \
+            "当前项目保存的所属账号、SSH 密钥或 origin 绑定缺失，或者彼此不一致。"
         fi
         muted \
-          "The next step uses repository owner $CURRENT_REPOSITORY_OWNER, verifies that account's SSH key and repository endpoint, then corrects only repository-local Git settings." \
-          "下一步会固定使用仓库所属账号 ${CURRENT_REPOSITORY_OWNER}，核对该账号的 SSH 密钥和仓库地址，然后只修正当前仓库自己的本地 Git 设置。"
+          "Repair uses repository owner $CURRENT_REPOSITORY_OWNER and changes only local account, SSH key, and origin settings. It does not contact GitHub." \
+          "修复时会固定使用仓库所属账号 ${CURRENT_REPOSITORY_OWNER}，只调整本机保存的账号、SSH 密钥和 origin 设置，不会连接 GitHub。"
         if ui_prompt_yes_no \
-          "Verify and bind this repository to its owner now?" \
-          "现在核对仓库所属账号并修正本地绑定吗？" \
+          "Repair this project's local owner binding now?" \
+          "现在修复当前项目的本机所属账号绑定吗？" \
           "yes"; then
-          configure_project || return 1
+          configure_project "" bind || return 1
         fi
       fi
     else
@@ -471,19 +469,31 @@ check_and_repair() {
     fi
   else
     muted \
-      "The current folder is not a Git repository; this verification command did not run git init." \
-      "当前文件夹还不是 Git 仓库；本次核对不会执行 git init。"
+      "The current folder is not a Git repository; this local check did not run git init." \
+      "当前文件夹还不是 Git 仓库；本次本机检查不会执行 git init。"
   fi
+}
 
-  if [ "$missing_count" -eq 0 ]; then
-    success \
-      "GitHub accepted an SSH key for every saved account checked above." \
-      "GitHub 已分别确认上面每个已保存账号对应的 SSH 密钥。"
-  else
-    warn \
-      "$missing_count saved account(s) still have no SSH key verified by GitHub." \
-      "仍有 $missing_count 个已保存账号没有通过 GitHub 验证的 SSH 密钥。"
+verify_current_project_online() {
+  require_core_commands
+  heading "Verify the current project with GitHub" "联网核对当前项目"
+  muted \
+    "This advanced diagnostic runs SSH authentication and a read-only remote check. It does not commit, push, or change the repository." \
+    "这项高级诊断会执行 SSH 身份验证和远端只读检查，但不会提交、上传或修改仓库。"
+  if ! locate_project no || ! read_origin_repository; then
+    error_message \
+      "The current folder has no recognizable GitHub project." \
+      "当前文件夹中没有可识别的 GitHub 项目。"
+    return 1
   fi
+  if ! load_established_project_binding; then
+    error_message \
+      "The local owner/key/origin binding is incomplete. Use the main menu's local project check first." \
+      "当前项目的本机所属账号、密钥或 origin 绑定还不完整。请先使用主菜单中的本机项目检查。"
+    return 1
+  fi
+  verify_key_matches_username "$BOUND_IDENTITY_FILE" "$BOUND_USERNAME" || return 1
+  verify_repository_access yes origin
 }
 
 run_new_command() {
@@ -545,9 +555,9 @@ run_menu() {
     if [ "$UI_LANGUAGE" = "zh" ]; then
       printf '  1) 提交并上传当前项目\n'
       printf '  2) 添加 GitHub 账号\n'
-      printf '  3) 切换当前项目的账号\n'
+      printf '  3) 绑定当前项目的所属账号\n'
       printf '  4) 同步用户名或仓库改名\n'
-      printf '  5) 核对账号和当前项目\n'
+      printf '  5) 核对当前项目的本机设置\n'
       printf '  6) 界面语言\n'
       printf '  7) 显示模式\n'
       printf '  8) 高级功能\n'
@@ -555,9 +565,9 @@ run_menu() {
     else
       printf '  1) Commit and push the current project\n'
       printf '  2) Add a GitHub account\n'
-      printf '  3) Switch the current project account\n'
+      printf '  3) Bind the current project to its owner\n'
       printf '  4) Sync a renamed username or repository\n'
-      printf '  5) Verify accounts and current project\n'
+      printf '  5) Check this project locally\n'
       printf '  6) Interface language\n'
       printf '  7) Display mode\n'
       printf '  8) Advanced features\n'
@@ -575,7 +585,7 @@ run_menu() {
         return
         ;;
       3)
-        switch_project_account || true
+        bind_project_owner || true
         pause_for_user
         ;;
       4)
@@ -583,7 +593,7 @@ run_menu() {
         advanced_pause
         ;;
       5)
-        check_and_repair || true
+        check_local_project_binding || true
         pause_for_user
         ;;
       6)
