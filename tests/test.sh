@@ -1695,7 +1695,7 @@ test_project_release_policy() {
 
   english_version="$(sed -nE 's/^## ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' "$PROJECT_DIRECTORY/CHANGELOG.md" | sed -n '1p')"
   chinese_version="$(sed -nE 's/^## ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' "$PROJECT_DIRECTORY/CHANGELOG_zh.md" | sed -n '1p')"
-  assert_equal "3.10.6" "$english_version" "English changelog declares release 3.10.6"
+  assert_equal "3.10.7" "$english_version" "English changelog declares release 3.10.7"
   assert_equal "$english_version" "$chinese_version" "English and Chinese changelogs declare the same release"
   if [[ "$english_version" != *4* ]] &&
      [[ "$english_version" =~ ^[1-9][0-9]*\.[1-9][0-9]*\.[1-9][0-9]*$ ]]; then
@@ -1707,6 +1707,7 @@ test_project_release_policy() {
 
 test_focused_commit_confirmation() {
   local repository="$TEST_TEMPORARY/focused-commit-confirmation"
+  local embedded_repository="$TEST_TEMPORARY/focused-embedded-project"
   local pager="$TEST_TEMPORARY/forbidden-git-pager"
   local pager_marker="$TEST_TEMPORARY/git-pager-was-opened"
   local original_root="${GIT_ROOT:-}"
@@ -1717,6 +1718,10 @@ test_focused_commit_confirmation() {
   local prompt_count=0
   local message=""
   local before_head=""
+  local before_cached=""
+  local output=""
+  local output_file="$TEST_TEMPORARY/focused-embedded-project-output"
+  local index=0
   local status=0
 
   mkdir -p "$repository"
@@ -1765,6 +1770,87 @@ test_focused_commit_confirmation() {
     pass "declining commit confirmation stops before staging"
   else
     fail_test "declining commit confirmation stops before staging"
+  fi
+
+  mkdir -p "$embedded_repository/native-scroll"
+  git -C "$embedded_repository" init -q
+  git -C "$embedded_repository" config user.name tester
+  git -C "$embedded_repository" config user.email tester@example.com
+  printf 'base\n' > "$embedded_repository/README.md"
+  git -C "$embedded_repository" add README.md
+  git -C "$embedded_repository" commit -qm baseline
+  printf '{"name":"native-scroll"}\n' > "$embedded_repository/native-scroll/package.json"
+  printf 'foreign\n' > "$embedded_repository/native-scroll/index.js"
+  GIT_ROOT="$embedded_repository"
+  PROJECT_BINDING_REUSED=true
+  prompt_count=0
+  prompt_commit_message() {
+    prompt_count=$((prompt_count + 1))
+    COMMIT_MESSAGE="$1"
+    return 0
+  }
+  status=0
+  prepare_and_commit > "$output_file" 2>&1 <<< '' || status=$?
+  output="$(< "$output_file")"
+  if [ "$status" -eq 2 ] &&
+     [ "$prompt_count" -eq 0 ] &&
+     git -C "$embedded_repository" diff --cached --quiet &&
+     printf '%s\n' "$output" | grep -Fq '?? native-scroll/' &&
+     printf '%s\n' "$output" | grep -Fq 'project marker: package.json' &&
+     ! printf '%s\n' "$output" | grep -Fq 'Looking for a release version'; then
+    pass "established projects show every change and stop before staging a possible embedded project by default"
+  else
+    fail_test "established projects show every change and stop before staging a possible embedded project by default"
+  fi
+
+  git -C "$embedded_repository" add native-scroll
+  before_cached="$(git -C "$embedded_repository" diff --cached)"
+  status=0
+  prepare_and_commit > "$output_file" 2>&1 <<< '' || status=$?
+  if [ "$status" -eq 2 ] &&
+     [ "$prompt_count" -eq 0 ] &&
+     [ "$(git -C "$embedded_repository" diff --cached)" = "$before_cached" ]; then
+    pass "the same default safeguard catches pre-staged project folders without changing the index"
+  else
+    fail_test "the same default safeguard catches pre-staged project folders without changing the index"
+  fi
+
+  status=0
+  prepare_and_commit >/dev/null 2>&1 <<< 'y' || status=$?
+  if [ "$status" -eq 0 ] &&
+     git -C "$embedded_repository" ls-tree --name-only HEAD native-scroll | grep -Fxq native-scroll; then
+    pass "an explicitly confirmed new project-like folder can still be committed"
+  else
+    fail_test "an explicitly confirmed new project-like folder can still be committed"
+  fi
+
+  mkdir -p "$embedded_repository/assets"
+  printf 'ordinary\n' > "$embedded_repository/assets/example.txt"
+  scan_possible_embedded_projects
+  if [ "$POSSIBLE_EMBEDDED_PROJECT_COUNT" -eq 0 ]; then
+    pass "an ordinary new folder adds no extra safety confirmation"
+  else
+    fail_test "an ordinary new folder adds no extra safety confirmation"
+  fi
+
+  POSSIBLE_EMBEDDED_PROJECT_DIRECTORIES=()
+  POSSIBLE_EMBEDDED_PROJECT_MARKERS=()
+  POSSIBLE_EMBEDDED_PROJECT_COUNT=23
+  index=0
+  while [ "$index" -lt "$POSSIBLE_EMBEDDED_PROJECT_COUNT" ]; do
+    POSSIBLE_EMBEDDED_PROJECT_DIRECTORIES[$index]="project-$((index + 1))"
+    POSSIBLE_EMBEDDED_PROJECT_MARKERS[$index]="package.json"
+    index=$((index + 1))
+  done
+  output="$(show_possible_embedded_projects 2>&1 <<< $'y\n0')"
+  if printf '%s\n' "$output" | grep -Fq '  a) project-9' &&
+     printf '%s\n' "$output" | grep -Fq '  r) project-22' &&
+     printf '%s\n' "$output" | grep -Fq '  y) Next page' &&
+     printf '%s\n' "$output" | grep -Fq '  1) project-23' &&
+     printf '%s\n' "$output" | grep -Fq '  x) Previous page'; then
+    pass "long embedded-project reviews use shared labels and x/y pagination"
+  else
+    fail_test "long embedded-project reviews use shared labels and x/y pagination"
   fi
 
   eval "$saved_prompt_commit_message"

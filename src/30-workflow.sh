@@ -798,9 +798,192 @@ show_staged_changes() {
   git -C "$GIT_ROOT" --no-pager diff --cached --stat
 }
 
+POSSIBLE_EMBEDDED_PROJECT_DIRECTORIES=()
+POSSIBLE_EMBEDDED_PROJECT_MARKERS=()
+POSSIBLE_EMBEDDED_PROJECT_COUNT=0
+
+top_level_project_marker() {
+  local directory="$1"
+  local marker=""
+  local marker_names=(
+    .git
+    package.json
+    pyproject.toml
+    setup.py
+    Cargo.toml
+    go.mod
+    pom.xml
+    build.gradle
+    build.gradle.kts
+    settings.gradle
+    settings.gradle.kts
+    Gemfile
+    composer.json
+    mix.exs
+    Package.swift
+    pubspec.yaml
+    CMakeLists.txt
+  )
+
+  for marker in "${marker_names[@]}"; do
+    if [ -e "$directory/$marker" ] || [ -L "$directory/$marker" ]; then
+      printf '%s' "$marker"
+      return 0
+    fi
+  done
+  return 1
+}
+
+possible_embedded_project_index() {
+  local directory="$1"
+  local index=0
+
+  while [ "$index" -lt "$POSSIBLE_EMBEDDED_PROJECT_COUNT" ]; do
+    if [ "${POSSIBLE_EMBEDDED_PROJECT_DIRECTORIES[$index]}" = "$directory" ]; then
+      printf '%s' "$index"
+      return 0
+    fi
+    index=$((index + 1))
+  done
+  return 1
+}
+
+scan_possible_embedded_projects() {
+  local entry=""
+  local top_level=""
+  local marker=""
+  local has_head=false
+
+  POSSIBLE_EMBEDDED_PROJECT_DIRECTORIES=()
+  POSSIBLE_EMBEDDED_PROJECT_MARKERS=()
+  POSSIBLE_EMBEDDED_PROJECT_COUNT=0
+  if git -C "$GIT_ROOT" rev-parse --verify HEAD >/dev/null 2>&1; then
+    has_head=true
+  fi
+
+  while IFS= read -r -d '' entry; do
+    entry="${entry%/}"
+    top_level="${entry%%/*}"
+    possible_embedded_project_index "$top_level" >/dev/null 2>&1 && continue
+    [ -d "$GIT_ROOT/$top_level" ] || continue
+    [ ! -L "$GIT_ROOT/$top_level" ] || continue
+    if [ "$has_head" = true ] &&
+       [ -n "$(git -C "$GIT_ROOT" ls-tree -r --name-only HEAD -- "$top_level/" 2>/dev/null)" ]; then
+      continue
+    fi
+    marker="$(top_level_project_marker "$GIT_ROOT/$top_level" || true)"
+    [ -n "$marker" ] || continue
+
+    POSSIBLE_EMBEDDED_PROJECT_DIRECTORIES[$POSSIBLE_EMBEDDED_PROJECT_COUNT]="$top_level"
+    POSSIBLE_EMBEDDED_PROJECT_MARKERS[$POSSIBLE_EMBEDDED_PROJECT_COUNT]="$marker"
+    POSSIBLE_EMBEDDED_PROJECT_COUNT=$((POSSIBLE_EMBEDDED_PROJECT_COUNT + 1))
+  done < <(
+    git -C "$GIT_ROOT" ls-files \
+      --others --exclude-standard --directory -z 2>/dev/null
+    git -C "$GIT_ROOT" diff \
+      --cached --name-only --diff-filter=A -z -- 2>/dev/null
+  )
+}
+
+show_possible_embedded_projects() {
+  local page=0
+  local page_count=""
+  local start=0
+  local end=0
+  local index=0
+  local label=""
+  local choice=""
+  local default_choice="y"
+
+  page_count="$(paged_choice_page_count "$POSSIBLE_EMBEDDED_PROJECT_COUNT")"
+  while true; do
+    start=$((page * PAGED_CHOICE_PAGE_SIZE))
+    end=$((start + PAGED_CHOICE_PAGE_SIZE))
+    [ "$end" -le "$POSSIBLE_EMBEDDED_PROJECT_COUNT" ] ||
+      end="$POSSIBLE_EMBEDDED_PROJECT_COUNT"
+    print_paged_page_status "$page" "$POSSIBLE_EMBEDDED_PROJECT_COUNT" "$UI_LANGUAGE"
+
+    index="$start"
+    while [ "$index" -lt "$end" ]; do
+      label="$(paged_choice_label "$((index - start))")" || return 1
+      if [ "$UI_LANGUAGE" = "zh" ]; then
+        printf '  %s) %s（识别依据：%s）\n' \
+          "$label" \
+          "${POSSIBLE_EMBEDDED_PROJECT_DIRECTORIES[$index]}" \
+          "${POSSIBLE_EMBEDDED_PROJECT_MARKERS[$index]}"
+      else
+        printf '  %s) %s (project marker: %s)\n' \
+          "$label" \
+          "${POSSIBLE_EMBEDDED_PROJECT_DIRECTORIES[$index]}" \
+          "${POSSIBLE_EMBEDDED_PROJECT_MARKERS[$index]}"
+      fi
+      index=$((index + 1))
+    done
+
+    [ "$page_count" -gt 1 ] || return 0
+    print_paged_navigation "$page" "$POSSIBLE_EMBEDDED_PROJECT_COUNT" "$UI_LANGUAGE"
+    if [ "$UI_LANGUAGE" = "zh" ]; then
+      printf '  0) 查看完毕，继续确认\n'
+    else
+      printf '  0) Finish reviewing this list\n'
+    fi
+    if [ "$page" -eq $((page_count - 1)) ]; then
+      default_choice="0"
+    else
+      default_choice="y"
+    fi
+
+    while true; do
+      choice="$(ui_prompt_value "Choose" "选择" "$default_choice")" || return 1
+      choice="$(lowercase "$choice")"
+      if [ "$choice" = "x" ] && [ "$page" -gt 0 ]; then
+        page=$((page - 1))
+        break
+      fi
+      if [ "$choice" = "y" ] && [ "$page" -lt $((page_count - 1)) ]; then
+        page=$((page + 1))
+        break
+      fi
+      if [ "$choice" = "0" ]; then
+        return 0
+      fi
+      warn "Enter one of the choices shown." "请输入当前页面中显示的选项。"
+    done
+    printf '\n'
+  done
+}
+
+review_possible_embedded_projects() {
+  scan_possible_embedded_projects || return 1
+  [ "$POSSIBLE_EMBEDDED_PROJECT_COUNT" -gt 0 ] || return 0
+
+  heading \
+    "Possible separate projects inside this repository" \
+    "发现可能属于其他项目的新目录"
+  warn \
+    "Each folder below is a new top-level directory that is absent from the current committed history and contains a file normally used to identify an independent project." \
+    "下面每个顶层文件夹都没有出现在当前提交历史中，并且包含通常用于识别独立项目的文件。"
+  show_possible_embedded_projects || return 1
+  muted \
+    "git add -A will include every listed folder in this repository. Continue only if all of them belong here." \
+    "执行 git add -A 后，上面列出的文件夹都会进入当前仓库。请只在确认它们确实属于本项目时继续。"
+  if ui_prompt_yes_no \
+    "Include all of these folders in this commit?" \
+    "确认把这些文件夹全部纳入本次提交吗？" \
+    "no"; then
+    return 0
+  fi
+
+  warn \
+    "Commit stopped before git add -A. Existing staged changes were left unchanged; no commit or push was performed." \
+    "已在执行 git add -A 前停止；原有暂存内容保持不变，也没有创建提交或上传文件。"
+  return 2
+}
+
 prepare_and_commit() {
   local has_commits=true
   local proposed="$DEFAULT_COMMIT_MESSAGE"
+  local review_status=0
 
   info \
     "Checking the working tree for changes to commit..." \
@@ -820,6 +1003,23 @@ prepare_and_commit() {
       "The working tree has no uncommitted changes. No commit will be created; any existing local commits will still be considered for push." \
       "工作区没有尚未提交的改动，因此不会创建新提交；如果本地已有尚未上传的提交，后续仍会尝试推送。"
     return 0
+  fi
+
+  heading "Review changes before committing" "提交前检查改动"
+  muted \
+    "The following output is from git status --short. A means added, M modified, D deleted, and ?? an untracked file." \
+    "下面是 git status --short 的结果：A 表示新增，M 表示修改，D 表示删除，?? 表示尚未跟踪的新文件。"
+  git -C "$GIT_ROOT" --no-pager status --short
+  muted \
+    "After the commit message is confirmed, git add -A will include every change shown above, including deletions." \
+    "确认提交说明后，脚本会执行 git add -A，把上面显示的全部改动一并纳入提交，其中也包括删除的文件。"
+
+  review_status=0
+  review_possible_embedded_projects || review_status=$?
+  if [ "$review_status" -eq 2 ]; then
+    return 2
+  elif [ "$review_status" -ne 0 ]; then
+    return 1
   fi
 
   info \
@@ -851,17 +1051,6 @@ prepare_and_commit() {
     muted \
       "No release version was found, so a general commit message will be used." \
       "没有发现版本号，将使用通用提交说明。"
-  fi
-
-  if [ "$PROJECT_BINDING_REUSED" != true ]; then
-    heading "Review changes before committing" "提交前检查改动"
-    muted \
-      "The following output is from git status --short. A means added, M modified, D deleted, and ?? an untracked file." \
-      "下面是 git status --short 的结果：A 表示新增，M 表示修改，D 表示删除，?? 表示尚未跟踪的新文件。"
-    git -C "$GIT_ROOT" --no-pager status --short
-    muted \
-      "After the commit message is confirmed, git add -A will include every change shown above, including deletions." \
-      "确认提交说明后，脚本会执行 git add -A，把上面显示的全部改动一并纳入提交，其中也包括删除的文件。"
   fi
 
   prompt_commit_message "$proposed"

@@ -6,6 +6,18 @@
 
 All notable changes to Auto Script for GitHub Setup and Push are documented in this file.
 
+## 3.10.7 - 2026-09-01
+
+### Changed
+
+- Made the complete `git status --short` review mandatory before every formal commit, including the established-project fast path.
+- Added a focused safeguard for new top-level folders absent from the current committed history that contain an independent-project marker. It covers both unstaged and already staged additions, shows each candidate with its marker, and requires a separate confirmation that defaults to No before version discovery or `git add -A` can run. Declining preserves the existing index.
+- Kept ordinary commits concise: normal new folders add no prompt, and explicitly approved project-like folders remain supported. Candidate lists use the shared numbering and pagination conventions.
+
+### Tests
+
+- Added focused coverage for unstaged and pre-staged candidates, unchanged index state after refusal, explicit approval, ordinary folders that need no extra prompt, and shared pagination for long review lists.
+
 ## 3.10.6 - 2026-09-01
 
 ### Changed
