@@ -6,6 +6,12 @@
 
 All notable changes to Auto Script for GitHub Setup and Push are documented in this file.
 
+## 3.7.5 - 2026-09-01
+
+### Changed
+
+- Split the commit-message instructions across two short lines and placed the editable default message on its own line for clearer terminal output in both English and Chinese.
+
 ## 3.7.3 - 2026-09-01
 
 ### Changed

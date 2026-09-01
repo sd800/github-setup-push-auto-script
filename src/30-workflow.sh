@@ -723,8 +723,12 @@ prompt_commit_message() {
   heading "Confirm commit message" "确认提交说明"
   muted "Commit message: $proposed" "本次提交说明：$proposed"
   entered="$(ui_prompt_value \
-    "Press Enter to confirm, type another message, or enter :cancel to stop before staging" \
-    "直接按 Enter 确认；也可以输入其他说明，或输入 :cancel 在暂存前停止" \
+    "Press Enter to confirm, or type another commit message.
+Enter :cancel to stop before staging.
+" \
+    "直接按 Enter 确认；也可以输入其他说明，
+或输入 :cancel 在暂存前停止
+" \
     "$proposed")" || return 1
   if [ "$(lowercase "$entered")" = ":cancel" ]; then
     return 2
