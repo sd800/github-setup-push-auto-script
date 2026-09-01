@@ -430,7 +430,7 @@ update_apply_validated_settings() {
   save_project_binding
 }
 
-run_update_command() {
+run_update_command() (
   local choice=""
   local selection_status=0
   local username_changed="no"
@@ -447,6 +447,8 @@ run_update_command() {
       "当前文件夹还不是 Git 项目。请把 ${SCRIPT_NAME} 放到项目根目录，并先运行 ./${SCRIPT_NAME}。"
     return 1
   fi
+  acquire_workflow_lock || return 1
+  install_workflow_cleanup_traps
   advanced_success \
     "Existing Git repository detected: $(human_path "$GIT_ROOT"). git init will not run." \
     "已识别现有 Git 仓库：$(human_path "$GIT_ROOT")。不会执行 git init。"
@@ -604,4 +606,4 @@ run_update_command() {
       "The previous SSH Host entry was kept so other local projects that reference it continue to work." \
       "原来的 SSH 主机配置已保留，避免影响仍在引用它的其他本地项目。"
   fi
-}
+)

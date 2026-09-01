@@ -745,7 +745,7 @@ test_central_distribution() {
 
   if ! grep -Eq '^/?g\.sh/?$' "$PROJECT_DIRECTORY/.gitignore" &&
      [ "$(find "$PROJECT_DIRECTORY" -maxdepth 1 -type f -name '*.sh' | wc -l | tr -d ' ')" -eq 2 ] &&
-     [ "$(find "$PROJECT_DIRECTORY/src" -maxdepth 1 -type f -name '*.sh' | wc -l | tr -d ' ')" -eq 7 ] &&
+     [ "$(find "$PROJECT_DIRECTORY/src" -maxdepth 1 -type f -name '*.sh' | wc -l | tr -d ' ')" -eq 8 ] &&
      [ "$(wc -l < "$PROJECT_DIRECTORY/git-auto.sh" | tr -d ' ')" -le 100 ] &&
      grep -Fq 'GIT_AUTO_MODULES=(' "$PROJECT_DIRECTORY/git-auto.sh" &&
      grep -RFq 'run_project_flow()' "$PROJECT_DIRECTORY/src" &&
@@ -1695,7 +1695,7 @@ test_project_release_policy() {
 
   english_version="$(sed -nE 's/^## ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' "$PROJECT_DIRECTORY/CHANGELOG.md" | sed -n '1p')"
   chinese_version="$(sed -nE 's/^## ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' "$PROJECT_DIRECTORY/CHANGELOG_zh.md" | sed -n '1p')"
-  assert_equal "3.10.7" "$english_version" "English changelog declares release 3.10.7"
+  assert_equal "3.11.1" "$english_version" "English changelog declares release 3.11.1"
   assert_equal "$english_version" "$chinese_version" "English and Chinese changelogs declare the same release"
   if [[ "$english_version" != *4* ]] &&
      [[ "$english_version" =~ ^[1-9][0-9]*\.[1-9][0-9]*\.[1-9][0-9]*$ ]]; then
@@ -1833,6 +1833,35 @@ test_focused_commit_confirmation() {
     fail_test "an ordinary new folder adds no extra safety confirmation"
   fi
 
+  mkdir -p "$embedded_repository/container/tool"
+  printf '{"name":"nested-tool"}\n' > "$embedded_repository/container/tool/package.json"
+  printf 'nested\n' > "$embedded_repository/container/tool/index.js"
+  scan_possible_embedded_projects
+  if possible_embedded_project_index "container/tool" >/dev/null 2>&1; then
+    pass "a new nested directory with an independent-project marker is detected"
+  else
+    fail_test "a new nested directory with an independent-project marker is detected"
+  fi
+  git -C "$embedded_repository" add container
+  git -C "$embedded_repository" commit -qm nested-fixture
+
+  mkdir -p "$embedded_repository/bulk" "$embedded_repository/small-bulk"
+  index=1
+  while [ "$index" -le 20 ]; do
+    printf 'bulk\n' > "$embedded_repository/bulk/file-$index.txt"
+    if [ "$index" -le 19 ]; then
+      printf 'small\n' > "$embedded_repository/small-bulk/file-$index.txt"
+    fi
+    index=$((index + 1))
+  done
+  scan_possible_embedded_projects
+  if possible_embedded_project_index bulk >/dev/null 2>&1 &&
+     ! possible_embedded_project_index small-bulk >/dev/null 2>&1; then
+    pass "a completely new top-level directory is flagged at the 20-file threshold only"
+  else
+    fail_test "a completely new top-level directory is flagged at the 20-file threshold only"
+  fi
+
   POSSIBLE_EMBEDDED_PROJECT_DIRECTORIES=()
   POSSIBLE_EMBEDDED_PROJECT_MARKERS=()
   POSSIBLE_EMBEDDED_PROJECT_COUNT=23
@@ -1870,6 +1899,174 @@ test_focused_commit_confirmation() {
   PROJECT_BINDING_REUSED="$original_binding_reused"
 }
 
+test_focused_transaction_safety() {
+  local repository="$TEST_TEMPORARY/focused-transaction"
+  local changed_repository="$TEST_TEMPORARY/focused-changed-after-review"
+  local racing_repository="$TEST_TEMPORARY/focused-racing-stage"
+  local branch_repository="$TEST_TEMPORARY/focused-branch-switch"
+  local output_file="$TEST_TEMPORARY/focused-transaction-output"
+  local original_root="${GIT_ROOT:-}"
+  local original_script_name="$SCRIPT_NAME"
+  local saved_prompt_commit_message=""
+  local saved_set_workflow_state=""
+  local lock_directory=""
+  local fake_key="$TEST_TEMPORARY/focused-transaction-key"
+  local status=0
+
+  mkdir -p "$repository"
+  git -C "$repository" init -q
+  git -C "$repository" config user.name tester
+  git -C "$repository" config user.email tester@example.com
+  printf 'base\n' > "$repository/file.txt"
+  git -C "$repository" add file.txt
+  git -C "$repository" commit -qm baseline
+  GIT_ROOT="$repository"
+  SCRIPT_NAME="g.sh"
+  resolve_workflow_common_directory
+  lock_directory="$WORKFLOW_COMMON_DIRECTORY/github-auto.workflow.lock"
+
+  mkdir "$lock_directory"
+  printf '%s\n' "$$" > "$lock_directory/pid"
+  printf 'active-test\n' > "$lock_directory/token"
+  WORKFLOW_LOCK_HELD=false
+  if acquire_workflow_lock > "$output_file" 2>&1; then
+    fail_test "an active same-repository workflow lock blocks an overlapping run"
+  elif grep -Fq 'already preparing, committing, updating, or pushing this same Git repository' "$output_file"; then
+    pass "an active same-repository workflow lock blocks an overlapping run"
+  else
+    fail_test "an active same-repository workflow lock blocks an overlapping run"
+  fi
+  rm -f "$lock_directory/pid" "$lock_directory/token"
+  rmdir "$lock_directory"
+
+  mkdir "$lock_directory"
+  printf '99999999\n' > "$lock_directory/pid"
+  printf 'stale-test\n' > "$lock_directory/token"
+  WORKFLOW_LOCK_HELD=false
+  if acquire_workflow_lock >/dev/null 2>&1 && [ "$WORKFLOW_LOCK_HELD" = true ]; then
+    pass "a stale owned workflow lock is reclaimed safely"
+  else
+    fail_test "a stale owned workflow lock is reclaimed safely"
+  fi
+  release_workflow_lock
+
+  printf 'phase: staged\npid: 99999999\n' > "$WORKFLOW_COMMON_DIRECTORY/github-auto.workflow-state"
+  WORKFLOW_LOCK_HELD=false
+  if acquire_workflow_lock > "$output_file" 2>&1 &&
+     grep -Fq 'ended while preparing the Git staging area' "$output_file" &&
+     [ ! -e "$WORKFLOW_COMMON_DIRECTORY/github-auto.workflow-state" ]; then
+    pass "an interrupted staging record is explained before a fresh run"
+  else
+    fail_test "an interrupted staging record is explained before a fresh run"
+  fi
+  release_workflow_lock
+
+  : > "$fake_key"
+  git -C "$repository" remote add origin git@github-owner:owner/project.git
+  git -C "$repository" config --local --add remote.origin.pushurl git@github-owner:owner/project.git
+  git -C "$repository" config --local github-auto.username owner
+  git -C "$repository" config --local github-auto.ssh-alias github-owner
+  git -C "$repository" config --local github-auto.identity-file "$fake_key"
+  GIT_ROOT="$repository"
+  capture_workflow_checkpoint
+  git -C "$repository" remote set-url origin git@github-owner:owner/changed.git
+  status=0
+  verify_workflow_checkpoint "uploading" "上传" > "$output_file" 2>&1 || status=$?
+  if [ "$status" -ne 0 ] && grep -Fq 'the origin address changed' "$output_file"; then
+    pass "an origin change after repository selection is blocked before push"
+  else
+    fail_test "an origin change after repository selection is blocked before push"
+  fi
+
+  saved_prompt_commit_message="$(declare -f prompt_commit_message)"
+  mkdir -p "$changed_repository"
+  git -C "$changed_repository" init -q
+  git -C "$changed_repository" config user.name tester
+  git -C "$changed_repository" config user.email tester@example.com
+  printf 'base\n' > "$changed_repository/file.txt"
+  git -C "$changed_repository" add file.txt
+  git -C "$changed_repository" commit -qm baseline
+  printf 'reviewed\n' >> "$changed_repository/file.txt"
+  GIT_ROOT="$changed_repository"
+  PROJECT_BINDING_REUSED=true
+  prompt_commit_message() {
+    printf 'changed after review\n' >> "$changed_repository/file.txt"
+    COMMIT_MESSAGE="$1"
+    return 0
+  }
+  status=0
+  prepare_and_commit > "$output_file" 2>&1 || status=$?
+  if [ "$status" -ne 0 ] &&
+     git -C "$changed_repository" diff --cached --quiet &&
+     grep -Fq 'changed after the review' "$output_file"; then
+    pass "a working-tree change after confirmation stops before the real staging area is changed"
+  else
+    fail_test "a working-tree change after confirmation stops before the real staging area is changed"
+  fi
+
+  mkdir -p "$branch_repository"
+  git -C "$branch_repository" init -q
+  git -C "$branch_repository" config user.name tester
+  git -C "$branch_repository" config user.email tester@example.com
+  printf 'base\n' > "$branch_repository/file.txt"
+  git -C "$branch_repository" add file.txt
+  git -C "$branch_repository" commit -qm baseline
+  printf 'reviewed\n' >> "$branch_repository/file.txt"
+  GIT_ROOT="$branch_repository"
+  prompt_commit_message() {
+    git -C "$branch_repository" switch -qc changed-during-review
+    COMMIT_MESSAGE="$1"
+    return 0
+  }
+  status=0
+  prepare_and_commit > "$output_file" 2>&1 || status=$?
+  if [ "$status" -ne 0 ] &&
+     git -C "$branch_repository" diff --cached --quiet &&
+     grep -Fq 'the current branch changed' "$output_file"; then
+    pass "a branch switch after confirmation stops before staging"
+  else
+    fail_test "a branch switch after confirmation stops before staging"
+  fi
+
+  mkdir -p "$racing_repository"
+  git -C "$racing_repository" init -q
+  git -C "$racing_repository" config user.name tester
+  git -C "$racing_repository" config user.email tester@example.com
+  printf 'base\n' > "$racing_repository/file.txt"
+  git -C "$racing_repository" add file.txt
+  git -C "$racing_repository" commit -qm baseline
+  printf 'reviewed\n' >> "$racing_repository/file.txt"
+  GIT_ROOT="$racing_repository"
+  prompt_commit_message() {
+    COMMIT_MESSAGE="$1"
+    return 0
+  }
+  saved_set_workflow_state="$(declare -f set_workflow_state)"
+  set_workflow_state() {
+    if [ "$1" = staging ]; then
+      printf 'arrived during staging\n' >> "$racing_repository/file.txt"
+    fi
+    return 0
+  }
+  status=0
+  prepare_and_commit > "$output_file" 2>&1 || status=$?
+  if [ "$status" -ne 0 ] &&
+     [ "$(git -C "$racing_repository" log -1 --pretty=%s)" = baseline ] &&
+     grep -Fq 'staged snapshot does not exactly match' "$output_file"; then
+    pass "the exact staged tree guard blocks files that arrive during git add -A"
+  else
+    fail_test "the exact staged tree guard blocks files that arrive during git add -A"
+  fi
+
+  eval "$saved_set_workflow_state"
+  eval "$saved_prompt_commit_message"
+  clear_workflow_review_snapshot
+  clear_workflow_state
+  release_workflow_lock
+  GIT_ROOT="$original_root"
+  SCRIPT_NAME="$original_script_name"
+}
+
 test_focused_ssh_and_launcher() {
   local identity_home="$TEST_TEMPORARY/focused-identity-home"
   local engine_repository="$TEST_TEMPORARY/focused-engine"
@@ -1899,6 +2096,7 @@ test_focused_ssh_and_launcher() {
   local saved_advanced_verify_repository_access=""
   local saved_run_git_with_identity=""
   local push_marker="$TEST_TEMPORARY/focused-push-target"
+  local push_head=""
   local registered_mapping=""
   local create_call_count=0
   local duplicate_history_identity_checks=0
@@ -2021,6 +2219,9 @@ test_focused_ssh_and_launcher() {
 
   git -C "$binding_repository" remote set-url origin git@github-sd800:sd800/example.git
   git -C "$binding_repository" remote add other git@github-sd800:sd800/other.git
+  printf 'push fixture\n' > "$binding_repository/README.md"
+  git -C "$binding_repository" add README.md
+  git -C "$binding_repository" commit -qm baseline
   git -C "$binding_repository" branch -M main
   git -C "$binding_repository" config --local branch.main.remote other
   git -C "$binding_repository" config --local branch.main.merge refs/heads/main
@@ -2030,19 +2231,30 @@ test_focused_ssh_and_launcher() {
   BOUND_IDENTITY_FILE="$second_key"
   saved_run_git_with_identity="$(declare -f run_git_with_identity)"
   run_git_with_identity() {
+    local argument=""
+    local source_reference=""
+
     shift
     printf '%s\n' "$*" > "$push_marker"
+    for argument in "$@"; do
+      source_reference="$argument"
+    done
+    source_reference="${source_reference%%:*}"
+    git -C "$GIT_ROOT" rev-parse "$source_reference" > "$push_marker.oid"
     printf 'transfer-progress\n'
     return 0
   }
   status=0
+  push_head="$(git -C "$binding_repository" rev-parse HEAD)"
   output="$(push_current_branch 2>&1)" || status=$?
   if [ "$status" -eq 0 ] &&
-     [ "$(cat "$push_marker")" = "push --progress -u origin main" ] &&
+     [[ "$(cat "$push_marker")" == push\ --progress\ origin\ refs/github-auto/push-*":refs/heads/main" ]] &&
+     [ "$(cat "$push_marker.oid")" = "$push_head" ] &&
+     [ -z "$(git -C "$binding_repository" for-each-ref --format='%(refname)' refs/github-auto/)" ] &&
      printf '%s\n' "$output" | grep -Fq 'transfer-progress'; then
-    pass "daily push explicitly targets origin and the current branch instead of an unrelated saved upstream"
+    pass "daily push sends the exact reviewed commit to origin instead of an unrelated saved upstream"
   else
-    fail_test "daily push explicitly targets origin and the current branch instead of an unrelated saved upstream"
+    fail_test "daily push sends the exact reviewed commit to origin instead of an unrelated saved upstream"
   fi
   run_git_with_identity() {
     shift
@@ -2378,6 +2590,7 @@ fi
 if [ "${1:-}" = "--commit-confirmation" ]; then
   printf 'TAP version 13\n'
   test_focused_commit_confirmation
+  test_focused_transaction_safety
   test_focused_history_confirmation
   printf '1..%s\n' "$TEST_COUNT"
   if [ "$FAILURE_COUNT" -gt 0 ]; then

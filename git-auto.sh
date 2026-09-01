@@ -46,6 +46,7 @@ GIT_AUTO_MODULES=(
   "00-core.sh"
   "10-ssh.sh"
   "20-repository.sh"
+  "25-safety.sh"
   "30-workflow.sh"
   "40-history.sh"
   "50-update.sh"

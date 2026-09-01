@@ -23,7 +23,7 @@ require_core_commands() {
   local missing=""
   local command_name=""
 
-  for command_name in git ssh awk sed find tee; do
+  for command_name in git ssh awk sed find tee cmp cp; do
     if ! command_exists "$command_name"; then
       missing="$missing $command_name"
     fi
@@ -851,8 +851,13 @@ possible_embedded_project_index() {
 scan_possible_embedded_projects() {
   local entry=""
   local top_level=""
+  local directory=""
   local marker=""
+  local index=0
+  local count_index=""
   local has_head=false
+  local top_level_names=()
+  local top_level_counts=()
 
   POSSIBLE_EMBEDDED_PROJECT_DIRECTORIES=()
   POSSIBLE_EMBEDDED_PROJECT_MARKERS=()
@@ -864,25 +869,64 @@ scan_possible_embedded_projects() {
   while IFS= read -r -d '' entry; do
     entry="${entry%/}"
     top_level="${entry%%/*}"
-    possible_embedded_project_index "$top_level" >/dev/null 2>&1 && continue
-    [ -d "$GIT_ROOT/$top_level" ] || continue
-    [ ! -L "$GIT_ROOT/$top_level" ] || continue
+    count_index=""
+    index=0
+    while [ "$index" -lt "${#top_level_names[@]}" ]; do
+      if [ "${top_level_names[$index]}" = "$top_level" ]; then
+        count_index="$index"
+        break
+      fi
+      index=$((index + 1))
+    done
+    if [ -z "$count_index" ]; then
+      count_index="${#top_level_names[@]}"
+      top_level_names[$count_index]="$top_level"
+      top_level_counts[$count_index]=0
+    fi
+    top_level_counts[$count_index]=$((top_level_counts[$count_index] + 1))
+
+    case "$entry" in
+      */*)
+        directory="${entry%/*}"
+        ;;
+      *)
+        directory="$entry"
+        ;;
+    esac
+    [ -d "$GIT_ROOT/$directory" ] || continue
+    [ ! -L "$GIT_ROOT/$directory" ] || continue
+    possible_embedded_project_index "$directory" >/dev/null 2>&1 && continue
+    marker="$(top_level_project_marker "$GIT_ROOT/$directory" || true)"
+    [ -n "$marker" ] || continue
     if [ "$has_head" = true ] &&
-       [ -n "$(git -C "$GIT_ROOT" ls-tree -r --name-only HEAD -- "$top_level/" 2>/dev/null)" ]; then
+       [ -n "$(git -C "$GIT_ROOT" ls-tree -r --name-only HEAD -- "$directory/" 2>/dev/null)" ]; then
       continue
     fi
-    marker="$(top_level_project_marker "$GIT_ROOT/$top_level" || true)"
-    [ -n "$marker" ] || continue
-
-    POSSIBLE_EMBEDDED_PROJECT_DIRECTORIES[$POSSIBLE_EMBEDDED_PROJECT_COUNT]="$top_level"
+    POSSIBLE_EMBEDDED_PROJECT_DIRECTORIES[$POSSIBLE_EMBEDDED_PROJECT_COUNT]="$directory"
     POSSIBLE_EMBEDDED_PROJECT_MARKERS[$POSSIBLE_EMBEDDED_PROJECT_COUNT]="$marker"
     POSSIBLE_EMBEDDED_PROJECT_COUNT=$((POSSIBLE_EMBEDDED_PROJECT_COUNT + 1))
   done < <(
     git -C "$GIT_ROOT" ls-files \
-      --others --exclude-standard --directory -z 2>/dev/null
+      --others --exclude-standard -z 2>/dev/null
     git -C "$GIT_ROOT" diff \
       --cached --name-only --diff-filter=A -z -- 2>/dev/null
   )
+
+  index=0
+  while [ "$index" -lt "${#top_level_names[@]}" ]; do
+    top_level="${top_level_names[$index]}"
+    if [ "${top_level_counts[$index]}" -ge 20 ] &&
+       [ -d "$GIT_ROOT/$top_level" ] &&
+       [ ! -L "$GIT_ROOT/$top_level" ] &&
+       ! possible_embedded_project_index "$top_level" >/dev/null 2>&1 &&
+       { [ "$has_head" = false ] ||
+         [ -z "$(git -C "$GIT_ROOT" ls-tree -r --name-only HEAD -- "$top_level/" 2>/dev/null)" ]; }; then
+      POSSIBLE_EMBEDDED_PROJECT_DIRECTORIES[$POSSIBLE_EMBEDDED_PROJECT_COUNT]="$top_level"
+      POSSIBLE_EMBEDDED_PROJECT_MARKERS[$POSSIBLE_EMBEDDED_PROJECT_COUNT]="many-new-files:${top_level_counts[$index]}"
+      POSSIBLE_EMBEDDED_PROJECT_COUNT=$((POSSIBLE_EMBEDDED_PROJECT_COUNT + 1))
+    fi
+    index=$((index + 1))
+  done
 }
 
 show_possible_embedded_projects() {
@@ -907,15 +951,35 @@ show_possible_embedded_projects() {
     while [ "$index" -lt "$end" ]; do
       label="$(paged_choice_label "$((index - start))")" || return 1
       if [ "$UI_LANGUAGE" = "zh" ]; then
-        printf '  %s) %s（识别依据：%s）\n' \
-          "$label" \
-          "${POSSIBLE_EMBEDDED_PROJECT_DIRECTORIES[$index]}" \
-          "${POSSIBLE_EMBEDDED_PROJECT_MARKERS[$index]}"
+        case "${POSSIBLE_EMBEDDED_PROJECT_MARKERS[$index]}" in
+          many-new-files:*)
+            printf '  %s) %s（识别依据：包含 %s 个新增文件）\n' \
+              "$label" \
+              "${POSSIBLE_EMBEDDED_PROJECT_DIRECTORIES[$index]}" \
+              "${POSSIBLE_EMBEDDED_PROJECT_MARKERS[$index]#many-new-files:}"
+            ;;
+          *)
+            printf '  %s) %s（识别依据：独立项目标志 %s）\n' \
+              "$label" \
+              "${POSSIBLE_EMBEDDED_PROJECT_DIRECTORIES[$index]}" \
+              "${POSSIBLE_EMBEDDED_PROJECT_MARKERS[$index]}"
+            ;;
+        esac
       else
-        printf '  %s) %s (project marker: %s)\n' \
-          "$label" \
-          "${POSSIBLE_EMBEDDED_PROJECT_DIRECTORIES[$index]}" \
-          "${POSSIBLE_EMBEDDED_PROJECT_MARKERS[$index]}"
+        case "${POSSIBLE_EMBEDDED_PROJECT_MARKERS[$index]}" in
+          many-new-files:*)
+            printf '  %s) %s (reason: %s newly added files)\n' \
+              "$label" \
+              "${POSSIBLE_EMBEDDED_PROJECT_DIRECTORIES[$index]}" \
+              "${POSSIBLE_EMBEDDED_PROJECT_MARKERS[$index]#many-new-files:}"
+            ;;
+          *)
+            printf '  %s) %s (independent-project marker: %s)\n' \
+              "$label" \
+              "${POSSIBLE_EMBEDDED_PROJECT_DIRECTORIES[$index]}" \
+              "${POSSIBLE_EMBEDDED_PROJECT_MARKERS[$index]}"
+            ;;
+        esac
       fi
       index=$((index + 1))
     done
@@ -958,11 +1022,11 @@ review_possible_embedded_projects() {
   [ "$POSSIBLE_EMBEDDED_PROJECT_COUNT" -gt 0 ] || return 0
 
   heading \
-    "Possible separate projects inside this repository" \
+    "New folders that may belong to another project" \
     "发现可能属于其他项目的新目录"
   warn \
-    "Each folder below is a new top-level directory that is absent from the current committed history and contains a file normally used to identify an independent project." \
-    "下面每个顶层文件夹都没有出现在当前提交历史中，并且包含通常用于识别独立项目的文件。"
+    "Each folder below is absent from the current committed history and either contains an independent-project marker or introduces an unusually large group of files." \
+    "下面每个目录都没有出现在当前提交历史中，并且包含独立项目标志，或者一次新增了数量异常多的文件。"
   show_possible_embedded_projects || return 1
   muted \
     "git add -A will include every listed folder in this repository. Continue only if all of them belong here." \
@@ -982,6 +1046,8 @@ review_possible_embedded_projects() {
 
 prepare_and_commit() {
   local has_commits=true
+  local rename_initial_branch=false
+  local existing_local_branch=""
   local proposed="$DEFAULT_COMMIT_MESSAGE"
   local review_status=0
 
@@ -990,9 +1056,25 @@ prepare_and_commit() {
     "正在检查工作区中是否有需要提交的改动……"
   if ! git -C "$GIT_ROOT" rev-parse --verify HEAD >/dev/null 2>&1; then
     has_commits=false
+    existing_local_branch="$(
+      git -C "$GIT_ROOT" for-each-ref --format='%(refname)' refs/heads/ 2>/dev/null |
+        sed -n '1p'
+    )"
+    if [ -z "$existing_local_branch" ]; then
+      rename_initial_branch=true
+    fi
   fi
 
-  if [ -z "$(git -C "$GIT_ROOT" status --porcelain 2>/dev/null)" ]; then
+  if ! capture_workflow_checkpoint || ! capture_workflow_review_snapshot; then
+    clear_workflow_review_snapshot
+    error_message \
+      "The repository state could not be recorded for a safe commit review." \
+      "无法记录当前仓库状态，因此不能安全地进行提交检查。"
+    return 1
+  fi
+
+  if [ ! -s "$WORKFLOW_REVIEW_SNAPSHOT" ]; then
+    clear_workflow_review_snapshot
     if [ "$has_commits" = false ]; then
       warn \
         "This repository has no commit and no project files available to commit. Nothing was pushed." \
@@ -1005,11 +1087,19 @@ prepare_and_commit() {
     return 0
   fi
 
+  if ! prepare_expected_staged_tree || ! verify_workflow_review_snapshot; then
+    clear_workflow_review_snapshot
+    error_message \
+      "The exact file snapshot for review could not be prepared safely. The real Git staging area was not changed." \
+      "无法安全生成本次检查所需的准确文件快照。真实 Git 暂存区没有发生变化。"
+    return 1
+  fi
+
   heading "Review changes before committing" "提交前检查改动"
   muted \
     "The following output is from git status --short. A means added, M modified, D deleted, and ?? an untracked file." \
     "下面是 git status --short 的结果：A 表示新增，M 表示修改，D 表示删除，?? 表示尚未跟踪的新文件。"
-  git -C "$GIT_ROOT" --no-pager status --short
+  sed -n '1,$p' "$WORKFLOW_REVIEW_SNAPSHOT"
   muted \
     "After the commit message is confirmed, git add -A will include every change shown above, including deletions." \
     "确认提交说明后，脚本会执行 git add -A，把上面显示的全部改动一并纳入提交，其中也包括删除的文件。"
@@ -1017,10 +1107,13 @@ prepare_and_commit() {
   review_status=0
   review_possible_embedded_projects || review_status=$?
   if [ "$review_status" -eq 2 ]; then
+    clear_workflow_review_snapshot
     return 2
   elif [ "$review_status" -ne 0 ]; then
+    clear_workflow_review_snapshot
     return 1
   fi
+  remember_approved_project_directories
 
   info \
     "Looking for a release version to prepare the commit message..." \
@@ -1058,15 +1151,31 @@ prepare_and_commit() {
     0)
       ;;
     2)
+      clear_workflow_review_snapshot
       warn \
         "Commit canceled before git add -A. This step did not stage, commit, or push any files." \
         "已在执行 git add -A 前取消；这一步没有暂存、提交或上传任何文件。"
       return 2
       ;;
     *)
+      clear_workflow_review_snapshot
       return 1
       ;;
   esac
+
+  if ! verify_workflow_checkpoint "staging" "执行暂存" ||
+     ! verify_workflow_review_snapshot ||
+     ! verify_reviewed_file_tree; then
+    clear_workflow_review_snapshot
+    return 1
+  fi
+  clear_workflow_review_snapshot
+  if ! set_workflow_state staging; then
+    error_message \
+      "The commit safety record could not be written. Stopped before git add -A." \
+      "无法写入本次提交的安全记录。脚本已在执行 git add -A 前停止。"
+    return 1
+  fi
 
   info \
     "Staging all confirmed changes with git add -A..." \
@@ -1077,10 +1186,26 @@ prepare_and_commit() {
       "git add -A 执行失败。Git 可能已经暂存了部分文件，请用 git status 检查；脚本没有继续提交或上传。"
     return 1
   fi
+  set_workflow_state staged || {
+    error_message \
+      "The post-staging safety record could not be written. Stopped before commit; the staging area was preserved." \
+      "无法写入暂存完成后的安全记录。脚本已在创建提交前停止，并保留当前暂存状态。"
+    return 1
+  }
+  if ! verify_workflow_checkpoint "committing" "创建提交" ||
+     ! verify_staging_finished_cleanly; then
+    return 1
+  fi
   if [ "$PROJECT_BINDING_REUSED" != true ]; then
     show_staged_changes
   fi
 
+  if ! set_workflow_state committing; then
+    error_message \
+      "The commit safety record could not be updated. Stopped before git commit; the staging area was preserved." \
+      "无法更新本次提交的安全记录。脚本已在执行 git commit 前停止，并保留当前暂存状态。"
+    return 1
+  fi
   info \
     "Creating commit: $COMMIT_MESSAGE. Any Git hooks or commit-signing prompt configured for this repository runs during this step." \
     "正在创建提交：${COMMIT_MESSAGE}。如果当前仓库配置了 Git hook 或提交签名，它们会在这一步运行并可能显示自己的提示。"
@@ -1092,15 +1217,28 @@ prepare_and_commit() {
   fi
   success "Committed: $COMMIT_MESSAGE" "已提交：$COMMIT_MESSAGE"
 
-  if [ "$has_commits" = false ]; then
+  if ! accept_created_commit_checkpoint "finishing the commit" "完成提交"; then
+    return 1
+  fi
+
+  if [ "$rename_initial_branch" = true ]; then
     git -C "$GIT_ROOT" branch -M main || fail \
       "The initial branch could not be named main." \
       "无法把初始分支设置为 main。"
   fi
+  if ! capture_workflow_checkpoint; then
+    error_message \
+      "The repository state could not be recorded after the commit. The new local commit was preserved, but no push was attempted." \
+      "提交完成后无法重新记录仓库状态。新的本地提交已经保留，但脚本没有继续上传。"
+    return 1
+  fi
+  clear_workflow_state
 }
 
 push_current_branch() {
   local branch=""
+  local push_head=""
+  local push_reference=""
   local output=""
   local output_file=""
   local push_status=0
@@ -1108,12 +1246,35 @@ push_current_branch() {
   local pipeline_status=()
 
   require_repository_account_match || return 1
+  if [ "$WORKFLOW_TRANSACTION_ACTIVE" = true ] &&
+     ! verify_workflow_checkpoint "uploading" "上传"; then
+    return 1
+  fi
   branch="$(git -C "$GIT_ROOT" branch --show-current)"
   if [ -z "$branch" ]; then
     fail \
       "The repository is in detached HEAD state, so a branch cannot be selected safely." \
       "当前处于 detached HEAD 状态，无法安全判断要推送的分支。"
   fi
+  if [ "$WORKFLOW_TRANSACTION_ACTIVE" = true ]; then
+    push_head="$WORKFLOW_EXPECTED_HEAD"
+  else
+    push_head="$(git -C "$GIT_ROOT" rev-parse --verify HEAD 2>/dev/null || true)"
+  fi
+  if [ -z "$push_head" ] || [ "$push_head" = "<unborn>" ]; then
+    fail \
+      "No local commit is available to push." \
+      "当前没有可上传的本地提交。"
+  fi
+  push_reference="refs/github-auto/push-${WORKFLOW_LOCK_TOKEN:-$$-${RANDOM:-1}}"
+  if ! git -C "$GIT_ROOT" check-ref-format "$push_reference" >/dev/null 2>&1 ||
+     ! git -C "$GIT_ROOT" update-ref "$push_reference" "$push_head"; then
+    error_message \
+      "The exact local commit could not be pinned for upload. No connection to GitHub was attempted." \
+      "无法在本机固定本次应当上传的准确提交。脚本没有连接 GitHub。"
+    return 1
+  fi
+  WORKFLOW_PUSH_REFERENCE="$push_reference"
 
   heading "Push to GitHub" "上传到 GitHub"
   github_target_summary \
@@ -1124,14 +1285,30 @@ push_current_branch() {
   info \
     "Connecting to GitHub and uploading branch $branch. Git transfer progress will appear below; large files or a slow network can make this step take longer." \
     "正在连接 GitHub 并上传 ${branch} 分支。下方会实时显示 Git 的传输进度；文件较大或网络较慢时，这一步会需要更长时间。"
-  output_file="$(safe_mktemp_file "${TMPDIR:-/tmp}" "push-output")" || return 1
+  if ! output_file="$(safe_mktemp_file "${TMPDIR:-/tmp}" "push-output")"; then
+    git -C "$GIT_ROOT" update-ref -d "$push_reference" >/dev/null 2>&1 || true
+    WORKFLOW_PUSH_REFERENCE=""
+    return 1
+  fi
+  if ! set_workflow_state pushing; then
+    rm -f "$output_file"
+    git -C "$GIT_ROOT" update-ref -d "$push_reference" >/dev/null 2>&1 || true
+    WORKFLOW_PUSH_REFERENCE=""
+    error_message \
+      "The push safety record could not be written. No connection to GitHub was attempted." \
+      "无法写入本次上传的安全记录。脚本没有连接 GitHub。"
+    return 1
+  fi
   run_git_with_identity "$BOUND_IDENTITY_FILE" \
-    push --progress -u origin "$branch" 2>&1 | tee "$output_file"
+    push --progress origin "$push_reference:refs/heads/$branch" 2>&1 | tee "$output_file"
   pipeline_status=("${PIPESTATUS[@]}")
   push_status=${pipeline_status[0]}
   tee_status=${pipeline_status[1]}
   output="$(sed -n '1,$p' "$output_file")"
   rm -f "$output_file"
+  git -C "$GIT_ROOT" update-ref -d "$push_reference" >/dev/null 2>&1 || true
+  WORKFLOW_PUSH_REFERENCE=""
+  clear_workflow_state
   if [ "$tee_status" -ne 0 ]; then
     error_message \
       "The live Git progress output could not be displayed completely." \
@@ -1141,6 +1318,12 @@ push_current_branch() {
   if [ "$push_status" -ne 0 ]; then
     explain_push_failure "$output" "$branch"
     return 1
+  fi
+  if ! git -C "$GIT_ROOT" config --local "branch.$branch.remote" origin ||
+     ! git -C "$GIT_ROOT" config --local "branch.$branch.merge" "refs/heads/$branch"; then
+    warn \
+      "The exact confirmed commit was uploaded, but Git could not save origin/$branch as this branch's upstream. The next ./$SCRIPT_NAME run can still push explicitly." \
+      "已经上传刚才确认的准确提交，但 Git 无法把 origin/${branch} 保存为当前分支的上游。下次运行 ./${SCRIPT_NAME} 时仍可继续明确上传。"
   fi
   success \
     "Upload completed with account $BOUND_USERNAME to ${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME}." \
@@ -1180,7 +1363,7 @@ explain_push_failure() {
   esac
 }
 
-run_project_flow() {
+run_project_flow() (
   local preferred_username="${1:-}"
   local account_status=0
   local commit_status=0
@@ -1188,6 +1371,9 @@ run_project_flow() {
   require_interactive
   require_core_commands
   locate_project yes
+  acquire_workflow_lock || return 1
+  install_workflow_cleanup_traps
+  WORKFLOW_TRANSACTION_ACTIVE=true
   describe_and_validate_project_state || return 1
   ensure_script_excluded
 
@@ -1206,4 +1392,4 @@ run_project_flow() {
     return 1
   fi
   push_current_branch
-}
+)

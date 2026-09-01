@@ -6,6 +6,21 @@
 
 All notable changes to Auto Script for GitHub Setup and Push are documented in this file.
 
+## 3.11.1 - 2026-09-01
+
+### Changed
+
+- Added a repository-wide workflow lock in Git's own control directory. Two `g.sh` processes can no longer prepare, commit, change bindings, reconnect rebuilt history, or push the same repository at the same time. Locks owned by a live process stop the later run; recognizable locks left by a process that no longer exists are reclaimed safely.
+- Added an interruption record for the staging, commit, and push phases. The next run explains where the earlier run ended, clears no staged work, and performs the complete review again instead of silently reusing an earlier preparation.
+- Turned each ordinary commit into a verified transaction. Before showing the review, the script builds an isolated Git-index snapshot without changing the real staging area. After confirmation it verifies the repository root, Git control directory, branch, HEAD, both `origin` URLs, saved account, email, SSH Host, key binding, Git index, file contents, and untracked-file set. After `git add -A`, the real staged tree must exactly match the reviewed tree before `git commit` can run.
+- Verified the new commit's direct parent and repository binding before upload. Ordinary push now sends the exact reviewed commit object to the explicitly named current branch on `origin`, then records that branch's upstream; a last-moment local ref movement cannot silently substitute another commit.
+- Expanded misplaced-project detection to new nested directories with independent-project markers and to entirely new top-level directories containing 20 or more files. The existing default-No confirmation remains, and already staged additions receive the same check.
+- Applied the same repository lock to username/repository update, owner binding, local binding repair, and the working-directory handoff after historical reconstruction.
+
+### Tests
+
+- Added focused coverage for active and stale locks, interrupted staging records, worktree and branch changes after confirmation, exact staged-tree mismatch, origin changes before upload, and exact-object push targeting.
+
 ## 3.10.7 - 2026-09-01
 
 ### Changed

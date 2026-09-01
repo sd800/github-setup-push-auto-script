@@ -1431,6 +1431,8 @@ history_link_working_directory() (
   GIT_ROOT="$target"
   SCRIPT_DIRECTORY="$target"
   SCRIPT_NAME="g.sh"
+  acquire_workflow_lock || return 1
+  install_workflow_cleanup_traps
   if git_operation_in_progress; then
     advanced_error \
       "A Git operation is unfinished in this working directory. Finish or cancel it before linking rebuilt history." \
@@ -1476,7 +1478,7 @@ history_link_working_directory() (
     "正在把当前工作目录衔接到本机重建历史；现有项目文件不会被改动……"
   git -C "$target" fetch -q "$HISTORY_WORK_DIRECTORY" \
     refs/heads/main:refs/git-auto/rebuilt-main || return 1
-  trap 'git -C "$target" update-ref -d refs/git-auto/rebuilt-main >/dev/null 2>&1 || true' EXIT
+  trap 'git -C "$target" update-ref -d refs/git-auto/rebuilt-main >/dev/null 2>&1 || true; cleanup_workflow_runtime' EXIT
 
   if [ "$has_commits" = true ]; then
     if git -C "$target" merge-base --is-ancestor refs/git-auto/rebuilt-main HEAD; then

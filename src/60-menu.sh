@@ -442,12 +442,14 @@ language_menu() {
     "界面语言已设为中文。"
 }
 
-bind_project_owner() {
+bind_project_owner() (
   require_core_commands
   if ! locate_project no; then
     warn "The current folder is not a Git project." "当前文件夹还不是 Git 项目。"
     return 1
   fi
+  acquire_workflow_lock || return 1
+  install_workflow_cleanup_traps
   if ! read_origin_repository; then
     warn \
       "The current project does not have a recognizable GitHub repository." \
@@ -458,15 +460,17 @@ bind_project_owner() {
   success \
     "This project uses its owner account, ${CURRENT_REPOSITORY_OWNER}." \
     "当前项目使用仓库所属账号 ${CURRENT_REPOSITORY_OWNER}。"
-}
+)
 
-check_local_project_binding() {
+check_local_project_binding() (
   local username=""
 
   require_core_commands
   heading "Check this project's local GitHub settings" "核对当前项目的本机 GitHub 设置"
 
   if locate_project no; then
+    acquire_workflow_lock || return 1
+    install_workflow_cleanup_traps
     success \
       "Existing Git repository detected: $(human_path "$GIT_ROOT"). git init will not run." \
       "已识别现有 Git 仓库：$(human_path "$GIT_ROOT")。不会执行 git init。"
@@ -514,7 +518,7 @@ check_local_project_binding() {
       "The current folder is not a Git repository; this local check did not run git init." \
       "当前文件夹还不是 Git 仓库；本次本机检查不会执行 git init。"
   fi
-}
+)
 
 verify_current_project_online() {
   require_core_commands
