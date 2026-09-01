@@ -23,7 +23,7 @@ require_core_commands() {
   local missing=""
   local command_name=""
 
-  for command_name in git ssh awk sed find; do
+  for command_name in git ssh awk sed find tee; do
     if ! command_exists "$command_name"; then
       missing="$missing $command_name"
     fi
@@ -802,6 +802,9 @@ prepare_and_commit() {
   local has_commits=true
   local proposed="$DEFAULT_COMMIT_MESSAGE"
 
+  info \
+    "Checking the working tree for changes to commit..." \
+    "正在检查工作区中是否有需要提交的改动……"
   if ! git -C "$GIT_ROOT" rev-parse --verify HEAD >/dev/null 2>&1; then
     has_commits=false
   fi
@@ -819,6 +822,9 @@ prepare_and_commit() {
     return 0
   fi
 
+  info \
+    "Looking for a release version to prepare the commit message..." \
+    "正在查找项目版本号，以生成本次提交说明……"
   if resolve_release_version; then
     proposed="${RELEASE_PREFIX}${RELEASE_VERSION}"
     info \
@@ -873,6 +879,9 @@ prepare_and_commit() {
       ;;
   esac
 
+  info \
+    "Staging all confirmed changes with git add -A..." \
+    "正在执行 git add -A，暂存刚才确认的全部改动……"
   if ! git -C "$GIT_ROOT" add -A; then
     error_message \
       "git add -A failed. Git may have staged some paths before stopping; inspect git status. No commit or push was attempted." \
@@ -883,6 +892,9 @@ prepare_and_commit() {
     show_staged_changes
   fi
 
+  info \
+    "Creating commit: $COMMIT_MESSAGE. Any Git hooks or commit-signing prompt configured for this repository runs during this step." \
+    "正在创建提交：${COMMIT_MESSAGE}。如果当前仓库配置了 Git hook 或提交签名，它们会在这一步运行并可能显示自己的提示。"
   if ! git -C "$GIT_ROOT" commit -m "$COMMIT_MESSAGE"; then
     error_message \
       "The commit failed. The selected changes remain staged for inspection, and no push was attempted." \
@@ -901,7 +913,10 @@ prepare_and_commit() {
 push_current_branch() {
   local branch=""
   local output=""
+  local output_file=""
   local push_status=0
+  local tee_status=0
+  local pipeline_status=()
 
   require_repository_account_match || return 1
   branch="$(git -C "$GIT_ROOT" branch --show-current)"
@@ -917,13 +932,27 @@ push_current_branch() {
     "$BOUND_USERNAME" \
     "$CURRENT_REPOSITORY_OWNER" \
     "$CURRENT_REPOSITORY_NAME"
-  output="$(run_git_with_identity "$BOUND_IDENTITY_FILE" push -u origin "$branch" 2>&1)" || push_status=$?
+  info \
+    "Connecting to GitHub and uploading branch $branch. Git transfer progress will appear below; large files or a slow network can make this step take longer." \
+    "正在连接 GitHub 并上传 ${branch} 分支。下方会实时显示 Git 的传输进度；文件较大或网络较慢时，这一步会需要更长时间。"
+  output_file="$(safe_mktemp_file "${TMPDIR:-/tmp}" "push-output")" || return 1
+  run_git_with_identity "$BOUND_IDENTITY_FILE" \
+    push --progress -u origin "$branch" 2>&1 | tee "$output_file"
+  pipeline_status=("${PIPESTATUS[@]}")
+  push_status=${pipeline_status[0]}
+  tee_status=${pipeline_status[1]}
+  output="$(sed -n '1,$p' "$output_file")"
+  rm -f "$output_file"
+  if [ "$tee_status" -ne 0 ]; then
+    error_message \
+      "The live Git progress output could not be displayed completely." \
+      "无法完整显示 Git 的实时传输进度。"
+    return 1
+  fi
   if [ "$push_status" -ne 0 ]; then
-    [ -z "$output" ] || printf '%s\n' "$output" >&2
     explain_push_failure "$output" "$branch"
     return 1
   fi
-  [ -z "$output" ] || printf '%s\n' "$output"
   success \
     "Upload completed with account $BOUND_USERNAME to ${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME}." \
     "已使用账号 $BOUND_USERNAME 上传到 ${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME}。"

@@ -6,6 +6,20 @@
 
 All notable changes to Auto Script for GitHub Setup and Push are documented in this file.
 
+## 3.10.1 - 2026-09-01
+
+### Changed
+
+- Added explicit progress communication around every potentially long ordinary stage: working-tree inspection, release-version discovery, staging, commit creation, SSH connection, and upload. Commit output also explains when repository hooks or signing may be responsible for additional visible prompts.
+- Changed ordinary push output from end-of-command buffering to live streaming with Git's real `--progress` data. Object enumeration, compression, transfer, and remote responses now appear while the command runs, while the same captured output remains available for precise failure explanations.
+- Added `[current/total]` progress to historical snapshot safety scans and history construction, live Git progress to both normal and lease-protected historical uploads, and an explicit status before connecting an active working directory to rebuilt local history.
+- Kept progress factual: the interface reports real stages and Git-provided transfer data rather than displaying a synthetic percentage or spinner that cannot measure the underlying operation.
+- Licensed the project under the MIT License and added the complete license text at the repository root.
+
+### Tests
+
+- Expanded focused push coverage to verify live progress output, explicit `origin` targeting, preserved pipeline failure status, and the existing detailed failure classification.
+
 ## 3.9.3 - 2026-09-01
 
 ### Changed

@@ -19,7 +19,7 @@ SSH identities, account verification, repository-specific authorship, release co
 
 ## Engineering rule
 
-Fast, convenient, and simple is also the implementation rule. Ordinary commands use the smallest correct Git and SSH operations: complete local state is reused, dependencies are checked only when a feature needs them, and safety comes from native atomic Git controls instead of duplicated preflight work. Optional `ssh -T`, `git ls-remote`, and account-discovery checks are available only under Advanced features. A routine push therefore makes no extra network request before the required `git push`. Git output never opens an interactive pager, and SSH keepalives return control when an established connection becomes unresponsive.
+Fast, convenient, and simple is also the implementation rule. Ordinary commands use the smallest correct Git and SSH operations: complete local state is reused, dependencies are checked only when a feature needs them, and safety comes from native atomic Git controls instead of duplicated preflight work. Optional `ssh -T`, `git ls-remote`, and account-discovery checks are available only under Advanced features. A routine push therefore makes no extra network request before the required `git push`. Potentially long stages name the work in progress, and uploads stream Git's real transfer progress instead of hiding output or inventing a synthetic percentage. Git output never opens an interactive pager, and SSH keepalives return control when an established connection becomes unresponsive.
 
 ## Architecture
 
@@ -213,7 +213,7 @@ Username changes reuse the existing key, create a collision-safe username-based 
 
 Every formal commit created by the script requires user confirmation first. For an established project, `./g.sh` keeps the workflow short: it detects the final commit message, displays it for confirmation, then runs `git add -A`, `git commit -m "Release X.Y.Z"`, and `git push`. Press Enter to accept the proposed message, type a replacement, or enter `:cancel` to stop before staging. With no working-tree changes, the script skips commit and goes directly to push.
 
-First-time setup and changed or incomplete bindings additionally show the complete working-tree review. Long change lists are printed directly and never open Git's interactive pager, so no hidden `q` keystroke is required before the commit continues. A detected release version always takes priority, including when the repository has no earlier commit; `Initial commit` is used only when that first snapshot has no detectable version.
+First-time setup and changed or incomplete bindings additionally show the complete working-tree review. Long change lists are printed directly and never open Git's interactive pager, so no hidden `q` keystroke is required before the commit continues. The interface identifies each potentially long stage—change inspection, version discovery, staging, commit creation, connection, and upload—and Git's own object and transfer progress is shown live during push. A detected release version always takes priority, including when the repository has no earlier commit; `Initial commit` is used only when that first snapshot has no detectable version.
 
 For every commit, including the first one, release versions are discovered in this order:
 
@@ -235,7 +235,7 @@ It discovers or accepts version mappings, sorts them by SemVer, and builds one c
 
 When archived releases lack a root `.gitignore`, the user can paste one shared set of rules directly into the terminal. It is added only to missing reconstructed snapshots and never written back to the source folders.
 
-The flow checks for sensitive-looking and oversized files, displays `git log --oneline --reverse`, and verifies the selected GitHub identity before publishing. Reconstructed commit timestamps use reliable detected release dates by default. The user can decline; in that case, no historical dates are assigned and each commit keeps the local system time that Git records automatically when creating it.
+The flow checks for sensitive-looking and oversized files, displays `git log --oneline --reverse`, and verifies the selected GitHub identity before publishing. Safety scans and snapshot construction show `[current/total]` progress, and publication streams Git's real transfer progress. Reconstructed commit timestamps use reliable detected release dates by default. The user can decline; in that case, no historical dates are assigned and each commit keeps the local system time that Git records automatically when creating it.
 
 Before creating reconstructed commits, the release plan displays every exact `Release X.Y.Z` message. One explicit batch confirmation covers the listed history; the internal builder refuses to create even the first commit unless that confirmation has been given.
 
@@ -283,4 +283,4 @@ Tests use temporary home folders, private profiles, Git repositories, SSH config
 
 ## License
 
-No license has been declared yet. Add one before assuming reuse rights beyond what copyright law permits.
+This project is available under the [MIT License](LICENSE).

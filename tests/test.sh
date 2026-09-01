@@ -1682,7 +1682,7 @@ test_project_release_policy() {
 
   english_version="$(sed -nE 's/^## ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' "$PROJECT_DIRECTORY/CHANGELOG.md" | sed -n '1p')"
   chinese_version="$(sed -nE 's/^## ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' "$PROJECT_DIRECTORY/CHANGELOG_zh.md" | sed -n '1p')"
-  assert_equal "3.9.3" "$english_version" "English changelog declares release 3.9.3"
+  assert_equal "3.10.1" "$english_version" "English changelog declares release 3.10.1"
   assert_equal "$english_version" "$chinese_version" "English and Chinese changelogs declare the same release"
   if [[ "$english_version" != *4* ]] &&
      [[ "$english_version" =~ ^[1-9][0-9]*\.[1-9][0-9]*\.[1-9][0-9]*$ ]]; then
@@ -1933,13 +1933,30 @@ test_focused_ssh_and_launcher() {
   run_git_with_identity() {
     shift
     printf '%s\n' "$*" > "$push_marker"
+    printf 'transfer-progress\n'
     return 0
   }
-  if push_current_branch >/dev/null 2>&1 &&
-     [ "$(cat "$push_marker")" = "push -u origin main" ]; then
+  status=0
+  output="$(push_current_branch 2>&1)" || status=$?
+  if [ "$status" -eq 0 ] &&
+     [ "$(cat "$push_marker")" = "push --progress -u origin main" ] &&
+     printf '%s\n' "$output" | grep -Fq 'transfer-progress'; then
     pass "daily push explicitly targets origin and the current branch instead of an unrelated saved upstream"
   else
     fail_test "daily push explicitly targets origin and the current branch instead of an unrelated saved upstream"
+  fi
+  run_git_with_identity() {
+    shift
+    printf 'rejected: non-fast-forward\n'
+    return 1
+  }
+  status=0
+  push_current_branch > "$push_marker" 2>&1 || status=$?
+  if [ "$status" -ne 0 ] &&
+     grep -Fq 'GitHub has commits on main' "$push_marker"; then
+    pass "live push progress preserves Git's failure status and detailed explanation"
+  else
+    fail_test "live push progress preserves Git's failure status and detailed explanation"
   fi
   eval "$saved_run_git_with_identity"
 
@@ -2037,6 +2054,7 @@ test_focused_ssh_and_launcher() {
   chmod 755 "$launcher_project/g.sh"
   printf '#!/usr/bin/env bash\nprintf "folder-launch:%%s:%%s:pager=%%s\\n" "$GIT_AUTO_PROJECT_ROOT" "${1:-}" "${GIT_PAGER:-}"\n' \
     > "$fake_engine_directory/git-auto.sh"
+  status=0
   output="$(
     cd "$launcher_project" &&
       printf '%s\n' "$fake_engine_directory" | GIT_PAGER=forbidden-pager bash ./g.sh probe 2>&1

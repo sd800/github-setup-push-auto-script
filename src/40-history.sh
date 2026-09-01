@@ -599,9 +599,15 @@ history_scan_risks() {
   HISTORY_LARGE_FILES=()
   HISTORY_LARGE_COUNT=0
 
+  advanced_info \
+    "Checking $HISTORY_RELEASE_COUNT release snapshot(s) for sensitive or oversized files..." \
+    "正在检查 $HISTORY_RELEASE_COUNT 个版本快照中是否包含敏感文件或超大文件……"
   while [ "$index" -lt "$HISTORY_RELEASE_COUNT" ]; do
     version="${HISTORY_RELEASE_VERSIONS[$index]}"
     directory="${HISTORY_RELEASE_DIRECTORIES[$index]}"
+    advanced_muted \
+      "[$((index + 1))/$HISTORY_RELEASE_COUNT] Scanning release $version..." \
+      "[$((index + 1))/$HISTORY_RELEASE_COUNT] 正在检查版本 ${version}……"
     while IFS= read -r -d '' file; do
       relative="${file#"$directory"/}"
       [ "$(basename "$file")" != ".DS_Store" ] || continue
@@ -628,6 +634,9 @@ history_scan_risks() {
     )
     index=$((index + 1))
   done
+  advanced_success \
+    "Safety scan completed for all release snapshots." \
+    "所有版本快照的文件安全检查已完成。"
 }
 
 history_collect_gitignore_content() {
@@ -1268,8 +1277,8 @@ history_build_repository() {
     source_directory="${HISTORY_RELEASE_DIRECTORIES[$index]}"
     release_date="${HISTORY_RELEASE_DATES[$index]}"
     advanced_info \
-      "Building complete snapshot for release $version..." \
-      "正在整理版本 $version 的完整文件快照……"
+      "[$((index + 1))/$HISTORY_RELEASE_COUNT] Building complete snapshot and commit for release $version..." \
+      "[$((index + 1))/$HISTORY_RELEASE_COUNT] 正在整理版本 ${version} 的完整快照并创建提交……"
 
     if ! history_replace_worktree_snapshot "$work_directory" "$source_directory"; then
       return 1
@@ -1326,7 +1335,10 @@ history_push_main_branch() {
     advanced_info \
       "The remote has no main branch. A normal push will create it without overwriting another branch." \
       "远端目前没有 main 分支。脚本会正常新建 main，不会覆盖已有分支。"
-    run_git_with_identity "$BOUND_IDENTITY_FILE" push -u origin main:main
+    advanced_info \
+      "Uploading rebuilt main. Git transfer progress will appear below." \
+      "正在上传重建后的 main；下方会实时显示 Git 传输进度。"
+    run_git_with_identity "$BOUND_IDENTITY_FILE" push --progress -u origin main:main
     return
   fi
 
@@ -1345,7 +1357,10 @@ history_push_main_branch() {
     return 2
   fi
 
-  run_git_with_identity "$BOUND_IDENTITY_FILE" push -u \
+  advanced_info \
+    "Uploading rebuilt main with the confirmed exact lease. Git transfer progress will appear below." \
+    "正在按照刚才确认的准确远端状态上传重建后的 main；下方会实时显示 Git 传输进度。"
+  run_git_with_identity "$BOUND_IDENTITY_FILE" push --progress -u \
     "--force-with-lease=refs/heads/main:$initial_oid" \
     origin main:main
 }
@@ -1456,6 +1471,9 @@ history_link_working_directory() (
   fi
 
   rebuilt_head="$(git -C "$HISTORY_WORK_DIRECTORY" rev-parse refs/heads/main)" || return 1
+  advanced_info \
+    "Connecting this working directory to the rebuilt local history without changing its project files..." \
+    "正在把当前工作目录衔接到本机重建历史；现有项目文件不会被改动……"
   git -C "$target" fetch -q "$HISTORY_WORK_DIRECTORY" \
     refs/heads/main:refs/git-auto/rebuilt-main || return 1
   trap 'git -C "$target" update-ref -d refs/git-auto/rebuilt-main >/dev/null 2>&1 || true' EXIT
