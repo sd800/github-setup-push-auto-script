@@ -1695,7 +1695,7 @@ test_project_release_policy() {
 
   english_version="$(sed -nE 's/^## ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' "$PROJECT_DIRECTORY/CHANGELOG.md" | sed -n '1p')"
   chinese_version="$(sed -nE 's/^## ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' "$PROJECT_DIRECTORY/CHANGELOG_zh.md" | sed -n '1p')"
-  assert_equal "3.11.1" "$english_version" "English changelog declares release 3.11.1"
+  assert_equal "3.11.2" "$english_version" "English changelog declares release 3.11.2"
   assert_equal "$english_version" "$chinese_version" "English and Chinese changelogs declare the same release"
   if [[ "$english_version" != *4* ]] &&
      [[ "$english_version" =~ ^[1-9][0-9]*\.[1-9][0-9]*\.[1-9][0-9]*$ ]]; then
@@ -1746,7 +1746,8 @@ test_focused_commit_confirmation() {
   }
   if prepare_and_commit >/dev/null 2>&1; then
     message="$(git -C "$repository" log -1 --pretty=%s)"
-    assert_equal "1|Release 9.1.2" "$prompt_count|$message" \
+    assert_equal "1|Release 9.1.2|true" \
+      "$prompt_count|$message|$WORKFLOW_COMMIT_CREATED_THIS_RUN" \
       "ordinary commit is created only after its message is confirmed"
     if [ ! -e "$pager_marker" ]; then
       pass "commit change summaries never open Git's interactive pager"
@@ -1756,6 +1757,13 @@ test_focused_commit_confirmation() {
   else
     fail_test "ordinary commit is created only after its message is confirmed"
     fail_test "commit change summaries never open Git's interactive pager"
+  fi
+
+  if prepare_and_commit >/dev/null 2>&1 &&
+     [ "$WORKFLOW_COMMIT_CREATED_THIS_RUN" = false ]; then
+    pass "a clean working tree is recorded as having no commit confirmed during this run"
+  else
+    fail_test "a clean working tree is recorded as having no commit confirmed during this run"
   fi
 
   printf 'second\n' >> "$repository/file.txt"
@@ -2244,9 +2252,20 @@ test_focused_ssh_and_launcher() {
     printf 'transfer-progress\n'
     return 0
   }
+  rm -f "$push_marker" "$push_marker.oid"
+  status=0
+  output="$(push_current_branch false 2>&1 <<< 'n')" || status=$?
+  if [ "$status" -eq 2 ] &&
+     [ ! -e "$push_marker" ] &&
+     printf '%s\n' "$output" | grep -Fq 'Latest local commit:' &&
+     printf '%s\n' "$output" | grep -Fq 'Upload canceled before connecting to GitHub'; then
+    pass "a pre-existing local commit cannot be pushed after upload confirmation is declined"
+  else
+    fail_test "a pre-existing local commit cannot be pushed after upload confirmation is declined"
+  fi
   status=0
   push_head="$(git -C "$binding_repository" rev-parse HEAD)"
-  output="$(push_current_branch 2>&1)" || status=$?
+  output="$(push_current_branch true 2>&1)" || status=$?
   if [ "$status" -eq 0 ] &&
      [[ "$(cat "$push_marker")" == push\ --progress\ origin\ refs/github-auto/push-*":refs/heads/main" ]] &&
      [ "$(cat "$push_marker.oid")" = "$push_head" ] &&
@@ -2262,7 +2281,7 @@ test_focused_ssh_and_launcher() {
     return 1
   }
   status=0
-  push_current_branch > "$push_marker" 2>&1 || status=$?
+  push_current_branch true > "$push_marker" 2>&1 || status=$?
   if [ "$status" -ne 0 ] &&
      grep -Fq 'GitHub has commits on main' "$push_marker"; then
     pass "live push progress preserves Git's failure status and detailed explanation"

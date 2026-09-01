@@ -18,6 +18,7 @@ BOUND_SSH_ALIAS=""
 BOUND_IDENTITY_FILE=""
 PROJECT_BINDING_REUSED=false
 PROJECT_BINDING_ENGINE_STALE=false
+WORKFLOW_COMMIT_CREATED_THIS_RUN=false
 
 require_core_commands() {
   local missing=""
@@ -1051,6 +1052,8 @@ prepare_and_commit() {
   local proposed="$DEFAULT_COMMIT_MESSAGE"
   local review_status=0
 
+  WORKFLOW_COMMIT_CREATED_THIS_RUN=false
+
   info \
     "Checking the working tree for changes to commit..." \
     "正在检查工作区中是否有需要提交的改动……"
@@ -1232,12 +1235,15 @@ prepare_and_commit() {
       "提交完成后无法重新记录仓库状态。新的本地提交已经保留，但脚本没有继续上传。"
     return 1
   fi
+  WORKFLOW_COMMIT_CREATED_THIS_RUN=true
   clear_workflow_state
 }
 
 push_current_branch() {
+  local confirmed_commit_created_this_run="${1:-false}"
   local branch=""
   local push_head=""
+  local latest_commit=""
   local push_reference=""
   local output=""
   local output_file=""
@@ -1266,6 +1272,37 @@ push_current_branch() {
       "No local commit is available to push." \
       "当前没有可上传的本地提交。"
   fi
+
+  heading "Push to GitHub" "上传到 GitHub"
+  github_target_summary \
+    normal \
+    "$BOUND_USERNAME" \
+    "$CURRENT_REPOSITORY_OWNER" \
+    "$CURRENT_REPOSITORY_NAME"
+  if [ "$confirmed_commit_created_this_run" != true ]; then
+    latest_commit="$(git -C "$GIT_ROOT" log -1 --format='%h %s' "$push_head" 2>/dev/null || true)"
+    muted \
+      "No new commit was created during this run." \
+      "本次运行没有创建新提交。"
+    muted "Current branch: $branch" "当前分支：$branch"
+    muted \
+      "Latest local commit: $latest_commit" \
+      "最新本地提交：$latest_commit"
+    if ! ui_prompt_yes_no \
+      "Push the current local branch, ending at the commit shown above, to GitHub?" \
+      "确认把以上述提交为最新提交的当前本地分支上传到 GitHub 吗？" \
+      "no"; then
+      warn \
+        "Upload canceled before connecting to GitHub. All local commits remain unchanged." \
+        "已在连接 GitHub 前取消上传；所有本地提交均保持不变。"
+      return 2
+    fi
+    if [ "$WORKFLOW_TRANSACTION_ACTIVE" = true ] &&
+       ! verify_workflow_checkpoint "uploading" "上传"; then
+      return 1
+    fi
+  fi
+
   push_reference="refs/github-auto/push-${WORKFLOW_LOCK_TOKEN:-$$-${RANDOM:-1}}"
   if ! git -C "$GIT_ROOT" check-ref-format "$push_reference" >/dev/null 2>&1 ||
      ! git -C "$GIT_ROOT" update-ref "$push_reference" "$push_head"; then
@@ -1276,12 +1313,6 @@ push_current_branch() {
   fi
   WORKFLOW_PUSH_REFERENCE="$push_reference"
 
-  heading "Push to GitHub" "上传到 GitHub"
-  github_target_summary \
-    normal \
-    "$BOUND_USERNAME" \
-    "$CURRENT_REPOSITORY_OWNER" \
-    "$CURRENT_REPOSITORY_NAME"
   info \
     "Connecting to GitHub and uploading branch $branch. Git transfer progress will appear below; large files or a slow network can make this step take longer." \
     "正在连接 GitHub 并上传 ${branch} 分支。下方会实时显示 Git 的传输进度；文件较大或网络较慢时，这一步会需要更长时间。"
@@ -1367,6 +1398,7 @@ run_project_flow() (
   local preferred_username="${1:-}"
   local account_status=0
   local commit_status=0
+  local push_status=0
 
   require_interactive
   require_core_commands
@@ -1391,5 +1423,9 @@ run_project_flow() (
   elif [ "$commit_status" -ne 0 ]; then
     return 1
   fi
-  push_current_branch
+  push_current_branch "$WORKFLOW_COMMIT_CREATED_THIS_RUN" || push_status=$?
+  if [ "$push_status" -eq 2 ]; then
+    return 0
+  fi
+  return "$push_status"
 )

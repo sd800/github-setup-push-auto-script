@@ -6,6 +6,17 @@
 
 All notable changes to Auto Script for GitHub Setup and Push are documented in this file.
 
+## 3.11.2 - 2026-09-01
+
+### Fixed
+
+- Restored an explicit confirmation boundary for the clean-working-tree path. When `./g.sh` did not create a commit during the current run, it now shows the current branch and latest local commit and requires confirmation before making any connection to GitHub; declining leaves all local commits unchanged.
+- Kept the ordinary changed-file path concise: the existing commit-message confirmation continues to cover the commit created during that run, without adding a second prompt immediately before its push.
+
+### Tests
+
+- Added focused coverage proving that a pre-existing local commit cannot reach the push command after the user declines, while an explicitly confirmed push still targets the exact local commit.
+
 ## 3.11.1 - 2026-09-01
 
 ### Changed
