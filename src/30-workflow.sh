@@ -720,11 +720,11 @@ prompt_commit_message() {
   local proposed="$1"
   local entered=""
 
-  heading "Confirm commit" "确认提交"
-  muted "Suggested commit message: $proposed" "建议的提交说明：$proposed"
+  heading "Confirm commit message" "确认提交说明"
+  muted "Commit message: $proposed" "本次提交说明：$proposed"
   entered="$(ui_prompt_value \
-    "Press Enter to use it, type another message, or enter :cancel to stop before staging" \
-    "直接按 Enter 使用建议内容；也可以输入其他说明，或输入 :cancel 在暂存前停止" \
+    "Press Enter to confirm, type another message, or enter :cancel to stop before staging" \
+    "直接按 Enter 确认；也可以输入其他说明，或输入 :cancel 在暂存前停止" \
     "$proposed")" || return 1
   if [ "$(lowercase "$entered")" = ":cancel" ]; then
     return 2
@@ -786,12 +786,7 @@ prepare_and_commit() {
       "没有发现版本号，将使用通用提交说明。"
   fi
 
-  if [ "$PROJECT_BINDING_REUSED" = true ]; then
-    COMMIT_MESSAGE="$proposed"
-    info \
-      "git add -A; git commit -m \"$COMMIT_MESSAGE\"; git push" \
-      "git add -A；git commit -m \"$COMMIT_MESSAGE\"；git push"
-  else
+  if [ "$PROJECT_BINDING_REUSED" != true ]; then
     heading "Review changes before committing" "提交前检查改动"
     muted \
       "The following output is from git status --short. A means added, M modified, D deleted, and ?? an untracked file." \
@@ -800,22 +795,22 @@ prepare_and_commit() {
     muted \
       "After the commit message is confirmed, git add -A will include every change shown above, including deletions." \
       "确认提交说明后，脚本会执行 git add -A，把上面显示的全部改动一并纳入提交，其中也包括删除的文件。"
-
-    prompt_commit_message "$proposed"
-    case "$?" in
-      0)
-        ;;
-      2)
-        warn \
-          "Commit canceled before git add -A. This step did not stage, commit, or push any files." \
-          "已在执行 git add -A 前取消；这一步没有暂存、提交或上传任何文件。"
-        return 2
-        ;;
-      *)
-        return 1
-        ;;
-    esac
   fi
+
+  prompt_commit_message "$proposed"
+  case "$?" in
+    0)
+      ;;
+    2)
+      warn \
+        "Commit canceled before git add -A. This step did not stage, commit, or push any files." \
+        "已在执行 git add -A 前取消；这一步没有暂存、提交或上传任何文件。"
+      return 2
+      ;;
+    *)
+      return 1
+      ;;
+  esac
 
   if ! git -C "$GIT_ROOT" add -A; then
     error_message \

@@ -1139,13 +1139,14 @@ test_repository_owner_account_enforcement() {
   saved_prompt_commit_message="$(declare -f prompt_commit_message)"
   prompt_commit_message() {
     commit_prompt_checks=$((commit_prompt_checks + 1))
-    return 1
+    COMMIT_MESSAGE="$1"
+    return 0
   }
   write_changelog "$repository/CHANGELOG.md" "9.1.1" "8.9.9"
   prepare_and_commit > "$output_file" 2>&1
   message="$(git -C "$repository" log -1 --pretty=%s)"
-  assert_equal "Release 9.1.1" "$message" "established project uses the detected release without a commit prompt"
-  assert_equal "0" "$commit_prompt_checks" "established project does not ask for a commit message"
+  assert_equal "Release 9.1.1" "$message" "established project uses the detected release after confirmation"
+  assert_equal "1" "$commit_prompt_checks" "established project confirms the final commit message once"
   if prepare_and_commit > "$output_file" 2>&1; then
     pass "a clean established project continues to the push stage"
   else

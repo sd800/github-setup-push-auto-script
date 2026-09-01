@@ -6,6 +6,13 @@
 
 All notable changes to Auto Script for GitHub Setup and Push are documented in this file.
 
+## 3.7.2 - 2026-09-01
+
+### Changed
+
+- Restored one commit-message confirmation before every new commit, including the established-project `./g.sh` fast path. The script displays the proposed version-derived message before `git add -A`; Enter accepts it, another value replaces it, and `:cancel` stops before staging, committing, or pushing.
+- Kept established projects concise by showing only the commit-message confirmation, while first-time or incomplete bindings continue to include the full working-tree review.
+
 ## 3.7.1 - 2026-09-01
 
 ### Changed

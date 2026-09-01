@@ -207,9 +207,9 @@ Username changes reuse the existing key, create a collision-safe username-based 
 
 ## Commit messages and release versions
 
-For an established project, `./g.sh` intentionally behaves like the shortest manual workflow: `git add -A`, `git commit -m "Release X.Y.Z"` when changes exist, then `git push`. The version message is detected automatically and no commit prompt interrupts this direct path. With no working-tree changes, the script skips commit and goes directly to push.
+For an established project, `./g.sh` keeps the workflow short: it detects the final commit message, displays it for confirmation, then runs `git add -A`, `git commit -m "Release X.Y.Z"`, and `git push`. Press Enter to accept the proposed message, type a replacement, or enter `:cancel` to stop before staging. With no working-tree changes, the script skips commit and goes directly to push.
 
-First-time setup and changed or incomplete bindings still show the working-tree review and ask for commit confirmation. A detected release version always takes priority, including when the repository has no earlier commit; `Initial commit` is used only when that first snapshot has no detectable version.
+First-time setup and changed or incomplete bindings additionally show the complete working-tree review. A detected release version always takes priority, including when the repository has no earlier commit; `Initial commit` is used only when that first snapshot has no detectable version.
 
 For every commit, including the first one, release versions are discovered in this order:
 
