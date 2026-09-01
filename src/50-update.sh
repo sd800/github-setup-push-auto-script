@@ -552,7 +552,9 @@ run_update_command() {
     done
   fi
 
-  update_resolve_identity_file "$UPDATE_NEW_USERNAME" || return 1
+  # A GitHub username change keeps the same account key. If the repository's
+  # exact key binding is incomplete, search by the former username and alias.
+  update_resolve_identity_file "$UPDATE_OLD_USERNAME" || return 1
   update_prepare_alias "$username_changed" || {
     advanced_error \
       "An unused SSH Host name for the existing key could not be selected." \

@@ -9,6 +9,45 @@ launcher_is_managed() {
     grep -Fq '# Managed git-auto project launcher' "$launcher_file" 2>/dev/null
 }
 
+shell_single_quoted_value() {
+  local value="$1"
+
+  printf "'"
+  printf '%s' "$value" | sed "s/'/'\\\\''/g"
+  printf "'"
+}
+
+write_private_launcher() {
+  local public_launcher="$ENGINE_DIRECTORY/g.sh"
+  local private_launcher="$PRIVATE_DIRECTORY/g.sh"
+  local temporary_file=""
+  local quoted_engine_path=""
+  local line=""
+  local replaced=false
+
+  [ -f "$public_launcher" ] || return 1
+  mkdir -p "$PRIVATE_DIRECTORY" || return 1
+  temporary_file="$(safe_mktemp_file "$PRIVATE_DIRECTORY" "g.sh")" || return 1
+  quoted_engine_path="$(shell_single_quoted_value "$ENGINE_PATH")"
+
+  while IFS= read -r line || [ -n "$line" ]; do
+    if [ "$line" = 'DEFAULT_ENGINE_PATH=""' ]; then
+      printf 'DEFAULT_ENGINE_PATH=%s\n' "$quoted_engine_path" >> "$temporary_file"
+      replaced=true
+    else
+      printf '%s\n' "$line" >> "$temporary_file"
+    fi
+  done < "$public_launcher"
+
+  if [ "$replaced" != true ] ||
+     ! bash -n "$temporary_file" >/dev/null 2>&1 ||
+     ! chmod 755 "$temporary_file" ||
+     ! mv "$temporary_file" "$private_launcher"; then
+    rm -f "$temporary_file"
+    return 1
+  fi
+}
+
 write_project_launcher() {
   local project_directory="$1"
   local launcher_file="$project_directory/g.sh"
@@ -149,8 +188,8 @@ check_saved_account_identity() {
     fi
   else
     warn \
-      "No SSH private key accepted by GitHub for account $username was found in ~/.ssh/config or its Include files." \
-      "在 ~/.ssh/config 及其 Include 文件中，没有找到可由 GitHub 确认为账号 $username 的现有私钥。"
+      "No local SSH private key inspected by this Advanced check was accepted by GitHub for account $username." \
+      "高级核对已经检查本机可识别的 SSH 私钥，但 GitHub 没有确认其中任何一把属于账号 $username。"
   fi
 
   next_available_alias "$username" || return 1
@@ -160,7 +199,7 @@ check_saved_account_identity() {
   if ! ui_prompt_yes_no \
     "Create and verify this separate SSH key for account $username?" \
     "要为账号 $username 创建并验证这把独立的 SSH 密钥吗？" \
-    "yes"; then
+    "no"; then
     warn \
       "No new SSH key was created for account $username." \
       "没有为账号 $username 创建新的 SSH 密钥。"
@@ -179,8 +218,8 @@ import_existing_accounts_online() {
   require_core_commands
   heading "Discover GitHub accounts through SSH" "通过 SSH 识别现有 GitHub 账号"
   muted \
-    "This advanced action contacts GitHub once for each distinct key referenced by ~/.ssh/config, then offers to import confirmed accounts." \
-    "这项高级操作会用 ~/.ssh/config 中引用的每一把不同密钥分别连接 GitHub，再询问是否导入确认到的账号。"
+    "This advanced action contacts GitHub once for each distinct key found through local SSH settings and conventional ~/.ssh/id_* files, then offers to import confirmed accounts." \
+    "这项高级操作会用本机 SSH 设置和常见 ~/.ssh/id_* 文件中找到的每一把不同密钥分别连接 GitHub，再询问是否导入已经确认的账号。"
   discover_verified_github_identities || return 1
   while [ "$index" -lt "$VERIFIED_IDENTITY_COUNT" ]; do
     username="${VERIFIED_IDENTITY_USERNAMES[$index]}"

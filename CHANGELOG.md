@@ -6,6 +6,28 @@
 
 All notable changes to Auto Script for GitHub Setup and Push are documented in this file.
 
+## 3.8.1 - 2026-09-01
+
+### Changed
+
+- Added an ignored, copy-ready `private/g.sh` whose built-in path points to the current central `git-auto.sh`. Central management and the central repository's own launcher refresh this personalized copy automatically; ordinary project pushes do no extra maintenance work. The tracked root `g.sh` remains generic.
+- Let the lightweight launcher accept either the complete `git-auto.sh` path or the path of its containing folder. Quoted paths, `~`, and folder paths are normalized before use.
+- Expanded SSH discovery to include the effective default `github.com` connection, every existing identity file listed for an SSH Host, and conventional `~/.ssh/id_*` private keys not yet assigned to a Host. This includes settings inherited through `Include` and wildcard rules.
+
+### Fixed
+
+- Fixed first-time project setup offering to create a duplicate key when the same account already had a valid nonstandard SSH Host saved by the central repository. A new project now reuses that exact local account, Host, and key mapping without an online precheck.
+- Defined local identity priority as a complete current-project mapping, then the central repository's complete owner/key mapping, then a `github-USERNAME` naming convention. A stale username-shaped Host can no longer override a more exact central mapping.
+- In incomplete project bindings, a saved nonstandard SSH Host is trusted only when it still resolves to the exact saved private key; otherwise the repair flow continues through safer identity discovery.
+- When existing GitHub keys are present but cannot be assigned to the requested username from trusted local state, ordinary setup now stops before guessing. It offers an explicit Advanced online identity check, an explicit new-key choice, or cancellation.
+- Changed new-key prompts reached after failed Advanced verification to default to No, preventing a temporary network failure from leading to an accidental duplicate key.
+- Made Advanced SSH identification noninteractive so an encrypted or unusable candidate key fails cleanly instead of leaving the workflow waiting for an unexpected passphrase prompt.
+- Fixed username-change synchronization falling back to the new username when it must locate the account's existing key under the former username.
+
+### Tests
+
+- Added focused coverage for central nonstandard-alias reuse, multi-key SSH Host discovery, folder-path launcher input, and the personalized private launcher.
+
 ## 3.7.5 - 2026-09-01
 
 ### Changed

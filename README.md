@@ -44,7 +44,8 @@ git-auto/
 |-- CHANGELOG_zh.md
 |-- tests/
 `-- private/          local only; created automatically and ignored by Git
-    `-- config.txt
+    |-- config.txt     personal preferences and account metadata
+    `-- g.sh           copy-ready launcher with the central path built in
 
 your-project/
 |-- g.sh              generated lightweight launcher; locally ignored
@@ -64,11 +65,13 @@ chmod +x git-auto.sh
 ./git-auto.sh
 ```
 
-The first interactive run asks for the interface language once and records it in `private/config.txt`. The central menu can copy `g.sh` into a selected project. The repository also includes the same public, copy-ready launcher, so a manual copy works too:
+The first interactive run asks for the interface language once and records it in `private/config.txt`. The central menu can copy `g.sh` into a selected project. It also creates `private/g.sh` with the central path already built in, so the quickest manual copy is:
 
 ```bash
-cp g.sh /path/to/your-project/g.sh
+cp private/g.sh /path/to/your-project/g.sh
 ```
+
+The tracked root `g.sh` remains the generic public copy for other users and installations.
 
 After that, move to the project and use only the short commands:
 
@@ -95,11 +98,11 @@ Running `./git-auto.sh new` from the central folder goes directly to account set
 
 ## Lightweight project launcher
 
-The public `g.sh` contains no GitHub account, SSH, version, commit, or history-building logic. It treats its own folder as the project root and uses the central engine path saved in that repository's local Git configuration. The central repository's own `g.sh` can use the `git-auto.sh` beside it. If neither exact path exists, the launcher asks for the `git-auto.sh` file instead of searching unrelated directories.
+The public `g.sh` contains no GitHub account, SSH, version, commit, or history-building logic. It treats its own folder as the project root and uses the central engine path saved in that repository's local Git configuration. The central repository's own `g.sh` can use the `git-auto.sh` beside it. If neither exact path exists, the launcher asks for either the `git-auto.sh` file or its containing folder instead of searching unrelated directories.
 
 The root `g.sh` is tracked and is never placed in this repository's ignore rules. When the central menu copies it into another project, only that project copy is added to `.git/info/exclude`; the project's shared `.gitignore` is not changed. After a project is configured successfully, the resolved central path is remembered in that project's local `.git/config`. The launcher itself remains generic and contains no personal path.
 
-If the central folder moves, paste its new `git-auto.sh` path once or use the central menu to repair the project launcher. The new exact path is saved locally; no project data or account configuration needs to be rebuilt.
+If the central folder moves, paste the new folder path or complete `git-auto.sh` path once, or use the central menu to repair the project launcher. The new exact path is saved locally; no project data or account configuration needs to be rebuilt. Central management and the central repository's own `g.sh` also refresh the ignored `private/g.sh`; launchers in other projects do no extra maintenance work during a routine push.
 
 ## Private configuration
 
@@ -124,7 +127,7 @@ Persistent binary switches belong only in `src/option.txt`, using one stable tec
 
 The central engine creates `private/` with owner-only directory permissions and `config.txt` with owner-only file permissions. It writes changes atomically and never places private keys, passphrases, access tokens, or passwords in this file.
 
-Every user of the public project gets an independent ignored `private/` folder. Personalized executable copies are not needed.
+Every user of the public project gets an independent ignored `private/` folder. Its generated `g.sh` is a convenience copy that contains only that installation's central path; account and preference fields remain exclusively in `config.txt`.
 
 ## Simple input rules
 
@@ -156,12 +159,13 @@ A clean repository creates no unnecessary commit. An empty repository with no pr
 Inside a project with a recognizable GitHub `origin`, `./g.sh new` derives the required username from the repository owner and never offers another account. Outside such a project, the central account menu can add any personal account. Ordinary setup follows these rules:
 
 1. In a project, request only the owner account's commit email when that account is not already saved.
-2. Reuse an existing local SSH Host only when it is already assigned to that username through the project's saved binding or the `github-USERNAME` naming convention.
-3. If no such local identity exists, show the exact key path and SSH Host before creating a dedicated ED25519 key.
-4. Guide the user through adding the public key to the correct GitHub account, then save the local account-to-key mapping.
-5. Do not run `ssh -T` or a repository read before the normal workflow. The next `git push` returns GitHub's actual result.
+2. Reuse identities in this order: the project's complete exact mapping, the central repository's complete mapping for the same owner, then a Host following the `github-USERNAME` naming convention. An incomplete project mapping must still resolve its saved Host to its exact saved private key.
+3. If other GitHub keys exist but their local names do not establish which account owns them, do not guess or default to creating another key. Offer an explicit Advanced online identity check, an explicit new-key choice, or cancellation.
+4. If no local GitHub identity exists, show the exact key path and SSH Host before creating a dedicated ED25519 key.
+5. Guide the user through adding the public key to the correct GitHub account, then save the local account-to-key mapping.
+6. Do not run `ssh -T` or a repository read unless the user explicitly selects the Advanced identity check. The next normal `git push` returns GitHub's actual result.
 
-New SSH Host names use `github-USERNAME`. Collisions are handled automatically with `-1`, `-2`, and later numbers. Each newly created account receives a different private key. Advanced features can scan `~/.ssh/config` and its `Include` files, ask GitHub which account accepts each distinct key, and import a confirmed identity under a username-based alias.
+New SSH Host names use `github-USERNAME`. Collisions are handled automatically with `-1`, `-2`, and later numbers. Each newly created account receives a different private key. Advanced features inspect explicit Hosts, included and wildcard settings, the effective default `github.com` connection, every existing identity file listed for those connections, and conventional `~/.ssh/id_*` private keys not yet assigned to a Host. They can ask GitHub which account accepts each distinct key and import a confirmed identity under a username-based alias. These checks are noninteractive: a locked or unusable key fails cleanly instead of opening an unexpected passphrase prompt.
 
 The local default is `USERNAME@users.noreply.github.com`. You can replace it with the exact private address shown by GitHub, including the `ID+USERNAME@users.noreply.github.com` form, or any email already verified for that account.
 
@@ -254,6 +258,7 @@ The interface uses plain text status labels and no emoji symbols.
 The engine writes only to locations required by the requested workflow:
 
 - `private/config.txt` for shared personal preferences and account metadata.
+- `private/g.sh` as an ignored copy-ready launcher containing the current central path.
 - `src/option.txt` as the technical location for persistent binary switches; it is currently empty.
 - `~/.ssh` for GitHub SSH keys and configuration.
 - The selected repository's `.git/config` and `.git/info/exclude` for local binding and launcher exclusion.
@@ -265,7 +270,7 @@ The script does not use any other application-specific configuration directory. 
 
 - Bash 3.2 or later.
 - Git and OpenSSH. `ssh-keygen` is required only when a new key must be created.
-- Standard POSIX/macOS utilities used by the single Bash engine.
+- Standard POSIX/macOS utilities used by the modular Bash engine.
 - Network access for `git push` and any Advanced online diagnostic the user explicitly selects.
 
 Run the isolated test suite with:

@@ -59,6 +59,12 @@ for GIT_AUTO_MODULE in "${GIT_AUTO_MODULES[@]}"; do
 done
 unset GIT_AUTO_MODULE GIT_AUTO_MODULES
 
+if [ "${GITHUB_AUTO_TESTING:-0}" != "1" ] &&
+   { [ "$RUNNING_FROM_LAUNCHER" != "1" ] ||
+     [ "$SCRIPT_DIRECTORY" -ef "$ENGINE_DIRECTORY" ]; }; then
+  write_private_launcher >/dev/null 2>&1 || true
+fi
+
 if [ "${GITHUB_AUTO_TESTING:-0}" != "1" ] && [ "${BASH_SOURCE[0]}" = "$0" ]; then
   main "$@"
 fi

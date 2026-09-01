@@ -492,8 +492,8 @@ ensure_bound_identity_with_github_verification() {
     fi
   else
     warn \
-      "No SSH private key accepted by GitHub for account $BOUND_USERNAME was found in ~/.ssh/config or its Include files." \
-      "在 ~/.ssh/config 及其 Include 文件中，没有找到可由 GitHub 确认为账号 $BOUND_USERNAME 的现有私钥。"
+      "No local SSH private key inspected by this Advanced check was accepted by GitHub for account $BOUND_USERNAME." \
+      "高级核对已经检查本机可识别的 SSH 私钥，但 GitHub 没有确认其中任何一把属于账号 $BOUND_USERNAME。"
   fi
 
   next_available_alias "$BOUND_USERNAME" || fail \
@@ -508,7 +508,7 @@ ensure_bound_identity_with_github_verification() {
   if ! ui_prompt_yes_no \
     "Create and configure this separate SSH key now?" \
     "现在创建并配置这把独立的 SSH 密钥吗？" \
-    "yes"; then
+    "no"; then
     warn \
       "Stopped before creating a key, changing the repository's account settings, committing, or pushing." \
       "操作已停止；没有创建新密钥，也没有修改当前仓库的账号设置、提交或上传。"
@@ -527,10 +527,31 @@ ensure_bound_identity_with_github_verification() {
 ensure_bound_identity() {
   local saved_username=""
   local preferred_alias=""
+  local saved_key=""
+  local alias_key=""
+  local canonical_saved_key=""
+  local canonical_alias_key=""
 
   saved_username="$(git -C "$GIT_ROOT" config --local --get github-auto.username 2>/dev/null || true)"
   if [ "$(lowercase "$saved_username")" = "$(lowercase "$BOUND_USERNAME")" ]; then
     preferred_alias="$(git -C "$GIT_ROOT" config --local --get github-auto.ssh-alias 2>/dev/null || true)"
+    saved_key="$(git -C "$GIT_ROOT" config --local --get github-auto.identity-file 2>/dev/null || true)"
+    saved_key="$(expand_home_path "$saved_key")"
+    saved_key="${saved_key//%d/${HOME:-}}"
+    if [ -n "$preferred_alias" ] && [ -f "$saved_key" ]; then
+      alias_key="$(resolve_alias_identity_file "$preferred_alias" || true)"
+      canonical_saved_key="$(canonical_existing_file "$saved_key" || true)"
+      if [ -f "$alias_key" ]; then
+        canonical_alias_key="$(canonical_existing_file "$alias_key" || true)"
+      fi
+    fi
+    if [ -z "$preferred_alias" ] ||
+       [ ! -f "$saved_key" ] ||
+       [ ! -f "$alias_key" ] ||
+       [ -z "$canonical_saved_key" ] ||
+       [ "$canonical_saved_key" != "$canonical_alias_key" ]; then
+      preferred_alias=""
+    fi
   fi
 
   if find_local_identity_for_username "$BOUND_USERNAME" "$preferred_alias"; then

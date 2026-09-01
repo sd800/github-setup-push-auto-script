@@ -5,11 +5,46 @@
 set -u
 
 PROJECT_ROOT="$({ cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P; } || exit 1)"
-ENGINE_PATH="${GIT_AUTO_ENGINE:-}"
+DEFAULT_ENGINE_PATH=""
+
+normalize_engine_path() {
+  local candidate="${1:-}"
+  local candidate_directory=""
+
+  case "$candidate" in
+    \"*\")
+      candidate="${candidate#\"}"
+      candidate="${candidate%\"}"
+      ;;
+    \'*\')
+      candidate="${candidate#\'}"
+      candidate="${candidate%\'}"
+      ;;
+  esac
+
+  case "$candidate" in
+    '~')
+      candidate="${HOME:-}"
+      ;;
+    '~/'*)
+      candidate="${HOME:-}/${candidate#\~/}"
+      ;;
+  esac
+
+  if [ -d "$candidate" ]; then
+    candidate="${candidate%/}/git-auto.sh"
+  fi
+  [ -f "$candidate" ] || return 1
+
+  candidate_directory="$({ cd "$(dirname "$candidate")" 2>/dev/null && pwd -P; } || return 1)"
+  printf '%s/%s' "$candidate_directory" "$(basename "$candidate")"
+}
+
+ENGINE_PATH="$(normalize_engine_path "${GIT_AUTO_ENGINE:-$DEFAULT_ENGINE_PATH}" 2>/dev/null || true)"
 
 if [ ! -f "$ENGINE_PATH" ]; then
   SAVED_ENGINE="$(git -C "$PROJECT_ROOT" config --local --get github-auto.engine 2>/dev/null || true)"
-  ENGINE_PATH="$SAVED_ENGINE"
+  ENGINE_PATH="$(normalize_engine_path "$SAVED_ENGINE" 2>/dev/null || true)"
 fi
 
 if [ ! -f "$ENGINE_PATH" ] && [ -f "$PROJECT_ROOT/git-auto.sh" ]; then
@@ -17,15 +52,14 @@ if [ ! -f "$ENGINE_PATH" ] && [ -f "$PROJECT_ROOT/git-auto.sh" ]; then
 fi
 
 if [ ! -f "$ENGINE_PATH" ]; then
-  printf '%s\n' 'Central git-auto.sh was not found. Paste its file path below.' >&2
-  printf '%s\n' '没有自动找到中央 git-auto.sh，请在下面粘贴它的文件路径。' >&2
-  printf 'git-auto.sh: ' >&2
-  IFS= read -r ENGINE_PATH || exit 1
-  ENGINE_PATH="${ENGINE_PATH#\"}"
-  ENGINE_PATH="${ENGINE_PATH%\"}"
+  printf '%s\n' 'Central git-auto.sh was not found. Paste the file path or its folder path below.' >&2
+  printf '%s\n' '没有自动找到中央 git-auto.sh，请在下面粘贴该文件或其所在文件夹的路径。' >&2
+  printf 'Path / 路径: ' >&2
+  IFS= read -r ENGINE_INPUT || exit 1
+  ENGINE_PATH="$(normalize_engine_path "$ENGINE_INPUT" 2>/dev/null || true)"
   if [ ! -f "$ENGINE_PATH" ]; then
-    printf '%s\n' '[Error] The selected git-auto.sh file does not exist.' >&2
-    printf '%s\n' '[错误] 选择的 git-auto.sh 文件不存在。' >&2
+    printf '%s\n' '[Error] No git-auto.sh file was found at the selected path.' >&2
+    printf '%s\n' '[错误] 在所选路径中没有找到 git-auto.sh 文件。' >&2
     exit 1
   fi
 fi

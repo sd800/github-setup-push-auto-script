@@ -121,28 +121,39 @@ collect_ssh_config_file() {
 
 scan_ssh_aliases() {
   local alias=""
+  local github_dot_com_present=false
 
   DISCOVERED_SSH_ALIASES=()
   DISCOVERED_SSH_ALIAS_COUNT=0
 
-  [ -f "$SSH_CONFIG_FILE" ] || return 0
+  if [ -f "$SSH_CONFIG_FILE" ]; then
+    SSH_SCAN_DIRECTORY="$(safe_mktemp_directory)" || return 1
+    SSH_SCAN_SEEN_FILE="$SSH_SCAN_DIRECTORY/seen"
+    SSH_SCAN_ALIAS_FILE="$SSH_SCAN_DIRECTORY/aliases"
+    : > "$SSH_SCAN_SEEN_FILE"
+    : > "$SSH_SCAN_ALIAS_FILE"
 
-  SSH_SCAN_DIRECTORY="$(safe_mktemp_directory)" || return 1
-  SSH_SCAN_SEEN_FILE="$SSH_SCAN_DIRECTORY/seen"
-  SSH_SCAN_ALIAS_FILE="$SSH_SCAN_DIRECTORY/aliases"
-  : > "$SSH_SCAN_SEEN_FILE"
-  : > "$SSH_SCAN_ALIAS_FILE"
+    collect_ssh_config_file "$SSH_CONFIG_FILE"
 
-  collect_ssh_config_file "$SSH_CONFIG_FILE"
+    while IFS= read -r alias; do
+      [ -n "$alias" ] || continue
+      DISCOVERED_SSH_ALIASES[$DISCOVERED_SSH_ALIAS_COUNT]="$alias"
+      DISCOVERED_SSH_ALIAS_COUNT=$((DISCOVERED_SSH_ALIAS_COUNT + 1))
+      if [ "$(lowercase "$alias")" = "github.com" ]; then
+        github_dot_com_present=true
+      fi
+    done < <(sort -fu "$SSH_SCAN_ALIAS_FILE")
 
-  while IFS= read -r alias; do
-    [ -n "$alias" ] || continue
-    DISCOVERED_SSH_ALIASES[$DISCOVERED_SSH_ALIAS_COUNT]="$alias"
+    rm -rf "$SSH_SCAN_DIRECTORY"
+    SSH_SCAN_DIRECTORY=""
+  fi
+
+  # OpenSSH can use standard default keys for github.com even when no explicit
+  # Host block exists. Include that effective connection in local discovery.
+  if [ "$github_dot_com_present" != true ]; then
+    DISCOVERED_SSH_ALIASES[$DISCOVERED_SSH_ALIAS_COUNT]="github.com"
     DISCOVERED_SSH_ALIAS_COUNT=$((DISCOVERED_SSH_ALIAS_COUNT + 1))
-  done < <(sort -fu "$SSH_SCAN_ALIAS_FILE")
-
-  rm -rf "$SSH_SCAN_DIRECTORY"
-  SSH_SCAN_DIRECTORY=""
+  fi
 }
 
 ssh_alias_exists() {
@@ -220,6 +231,28 @@ resolve_alias_identity_file() {
   return 1
 }
 
+list_existing_alias_identity_files() {
+  local alias="$1"
+  local line=""
+  local path=""
+  local config_file="$SSH_CONFIG_FILE"
+
+  if [ ! -f "$config_file" ]; then
+    config_file="/dev/null"
+  fi
+
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    path="$(expand_home_path "$line")"
+    path="${path//%d/${HOME:-}}"
+    [ -f "$path" ] || continue
+    printf '%s\n' "$path"
+  done < <(
+    ssh -F "$config_file" -G "$alias" 2>/dev/null |
+      awk 'tolower($1) == "identityfile" { $1=""; sub(/^[[:space:]]+/, ""); print }'
+  )
+}
+
 key_fingerprint() {
   local private_key="$1"
   local public_key="${private_key}.pub"
@@ -254,6 +287,7 @@ identify_key_username() {
       -o IdentitiesOnly=yes \
       -o PreferredAuthentications=publickey \
       -o PasswordAuthentication=no \
+      -o BatchMode=yes \
       -o ConnectTimeout=12 \
       -i "$private_key" \
       github.com \
@@ -273,6 +307,31 @@ identify_key_username() {
 
   SSH_VERIFICATION_OUTPUT="$output"
   return 1
+}
+
+list_conventional_private_key_files() {
+  local private_key=""
+  local first_line=""
+
+  [ -d "$SSH_DIRECTORY" ] || return 0
+  for private_key in "$SSH_DIRECTORY"/id_*; do
+    [ -f "$private_key" ] || continue
+    case "$private_key" in
+      *.pub|*-cert.pub)
+        continue
+        ;;
+    esac
+    first_line="$(LC_ALL=C sed -n '1p' "$private_key" 2>/dev/null || true)"
+    case "$first_line" in
+      '-----BEGIN OPENSSH PRIVATE KEY-----'|\
+      '-----BEGIN RSA PRIVATE KEY-----'|\
+      '-----BEGIN DSA PRIVATE KEY-----'|\
+      '-----BEGIN EC PRIVATE KEY-----'|\
+      '-----BEGIN PRIVATE KEY-----')
+        printf '%s\n' "$private_key"
+        ;;
+    esac
+  done
 }
 
 verify_key_matches_username() {
@@ -353,31 +412,59 @@ find_verified_identity_for_username() {
       esac
 
       ssh_alias_is_github "$alias" || continue
-      key="$(resolve_alias_identity_file "$alias" || true)"
-      [ -f "$key" ] || continue
-      canonical_key="$(canonical_existing_file "$key" || true)"
-      [ -n "$canonical_key" ] || continue
-      case "$checked_keys" in
-        *"|$canonical_key|"*)
-          continue
-          ;;
-      esac
-      checked_keys="${checked_keys}${canonical_key}|"
+      while IFS= read -r key; do
+        [ -f "$key" ] || continue
+        canonical_key="$(canonical_existing_file "$key" || true)"
+        [ -n "$canonical_key" ] || continue
+        case "$checked_keys" in
+          *"|$canonical_key|"*)
+            continue
+            ;;
+        esac
+        checked_keys="${checked_keys}${canonical_key}|"
 
-      if identify_key_username "$key" &&
-         [ "$(lowercase "$VERIFIED_GITHUB_USERNAME")" = "$(lowercase "$username")" ]; then
-        FOUND_SSH_ALIAS="$alias"
-        FOUND_IDENTITY_FILE="$key"
-        return 0
-      fi
-      if [ -z "$VERIFIED_GITHUB_USERNAME" ] &&
-         [ -z "$FOUND_UNVERIFIED_IDENTITY_FILE" ]; then
-        FOUND_UNVERIFIED_SSH_ALIAS="$alias"
-        FOUND_UNVERIFIED_IDENTITY_FILE="$key"
-      fi
+        if identify_key_username "$key" &&
+           [ "$(lowercase "$VERIFIED_GITHUB_USERNAME")" = "$(lowercase "$username")" ]; then
+          FOUND_SSH_ALIAS="$alias"
+          FOUND_IDENTITY_FILE="$key"
+          return 0
+        fi
+        if [ -z "$VERIFIED_GITHUB_USERNAME" ] &&
+           [ -z "$FOUND_UNVERIFIED_IDENTITY_FILE" ]; then
+          FOUND_UNVERIFIED_SSH_ALIAS="$alias"
+          FOUND_UNVERIFIED_IDENTITY_FILE="$key"
+        fi
+      done < <(list_existing_alias_identity_files "$alias")
     done
     passes=$((passes + 1))
   done
+
+  # A conventional ~/.ssh/id_* private key may exist without any Host entry.
+  # It is never trusted locally, but an explicitly selected Advanced check can
+  # ask GitHub whether it belongs to the requested account.
+  while IFS= read -r key; do
+    [ -f "$key" ] || continue
+    canonical_key="$(canonical_existing_file "$key" || true)"
+    [ -n "$canonical_key" ] || continue
+    case "$checked_keys" in
+      *"|$canonical_key|"*)
+        continue
+        ;;
+    esac
+    checked_keys="${checked_keys}${canonical_key}|"
+
+    if identify_key_username "$key" &&
+       [ "$(lowercase "$VERIFIED_GITHUB_USERNAME")" = "$(lowercase "$username")" ]; then
+      FOUND_SSH_ALIAS="github.com"
+      FOUND_IDENTITY_FILE="$key"
+      return 0
+    fi
+    if [ -z "$VERIFIED_GITHUB_USERNAME" ] &&
+       [ -z "$FOUND_UNVERIFIED_IDENTITY_FILE" ]; then
+      FOUND_UNVERIFIED_SSH_ALIAS="github.com"
+      FOUND_UNVERIFIED_IDENTITY_FILE="$key"
+    fi
+  done < <(list_conventional_private_key_files)
 
   return 1
 }
@@ -421,7 +508,63 @@ find_local_identity_for_username() {
       return 0
     done
     pass=$((pass + 1))
+    if [ "$pass" -eq 1 ] && find_engine_identity_for_username "$username"; then
+      return 0
+    fi
   done
+
+  return 1
+}
+
+find_engine_identity_for_username() {
+  local username="$1"
+  local saved_username=""
+  local saved_alias=""
+  local saved_key=""
+  local alias_key=""
+  local canonical_saved_key=""
+  local canonical_alias_key=""
+  local engine_git_root=""
+
+  engine_git_root="$(git -C "$ENGINE_DIRECTORY" rev-parse --show-toplevel 2>/dev/null || true)"
+  [ -n "$engine_git_root" ] && [ "$engine_git_root" -ef "$ENGINE_DIRECTORY" ] || return 1
+  saved_username="$(git -C "$ENGINE_DIRECTORY" config --local --get github-auto.username 2>/dev/null || true)"
+  [ "$(lowercase "$saved_username")" = "$(lowercase "$username")" ] || return 1
+
+  saved_alias="$(git -C "$ENGINE_DIRECTORY" config --local --get github-auto.ssh-alias 2>/dev/null || true)"
+  saved_key="$(git -C "$ENGINE_DIRECTORY" config --local --get github-auto.identity-file 2>/dev/null || true)"
+  saved_key="$(expand_home_path "$saved_key")"
+  saved_key="${saved_key//%d/${HOME:-}}"
+  [ -n "$saved_alias" ] && [ -f "$saved_key" ] || return 1
+  ssh_alias_is_github "$saved_alias" || return 1
+
+  alias_key="$(resolve_alias_identity_file "$saved_alias" || true)"
+  canonical_saved_key="$(canonical_existing_file "$saved_key" || true)"
+  canonical_alias_key="$(canonical_existing_file "$alias_key" || true)"
+  [ -n "$canonical_saved_key" ] &&
+    [ "$canonical_saved_key" = "$canonical_alias_key" ] || return 1
+
+  FOUND_SSH_ALIAS="$saved_alias"
+  FOUND_IDENTITY_FILE="$saved_key"
+  return 0
+}
+
+configured_github_identity_exists() {
+  local index=0
+  local alias=""
+  local key=""
+
+  scan_ssh_aliases || return 1
+  while [ "$index" -lt "$DISCOVERED_SSH_ALIAS_COUNT" ]; do
+    alias="${DISCOVERED_SSH_ALIASES[$index]}"
+    index=$((index + 1))
+    ssh_alias_is_github "$alias" || continue
+    key="$(resolve_alias_identity_file "$alias" || true)"
+    [ -f "$key" ] && return 0
+  done
+  while IFS= read -r key; do
+    [ -f "$key" ] && return 0
+  done < <(list_conventional_private_key_files)
   return 1
 }
 
@@ -788,7 +931,35 @@ discover_verified_github_identities() {
     index=$((index + 1))
 
     ssh_alias_is_github "$alias" || continue
-    key="$(resolve_alias_identity_file "$alias" || true)"
+    while IFS= read -r key; do
+      [ -f "$key" ] || continue
+      canonical_key="$(canonical_existing_file "$key" || true)"
+      [ -n "$canonical_key" ] || continue
+      case "$checked_keys" in
+        *"|$canonical_key|"*)
+          continue
+          ;;
+      esac
+      checked_keys="${checked_keys}${canonical_key}|"
+
+      muted \
+        "Asking GitHub which account accepts key $(human_path "$key") from SSH Host $alias; saved account and repository settings will not be changed." \
+        "正在核对 SSH 主机名 $alias 指定的密钥 $(human_path "$key") 对应哪个 GitHub 账号；这一步不会修改已保存账号或仓库设置。"
+      if identify_key_username "$key"; then
+        if ! verified_identity_index "$VERIFIED_GITHUB_USERNAME" >/dev/null 2>&1; then
+          VERIFIED_IDENTITY_USERNAMES[$VERIFIED_IDENTITY_COUNT]="$VERIFIED_GITHUB_USERNAME"
+          VERIFIED_IDENTITY_ALIASES[$VERIFIED_IDENTITY_COUNT]="$alias"
+          VERIFIED_IDENTITY_FILES[$VERIFIED_IDENTITY_COUNT]="$key"
+          VERIFIED_IDENTITY_COUNT=$((VERIFIED_IDENTITY_COUNT + 1))
+          success \
+            "Found GitHub account: $VERIFIED_GITHUB_USERNAME" \
+            "发现 GitHub 账号：$VERIFIED_GITHUB_USERNAME"
+        fi
+      fi
+    done < <(list_existing_alias_identity_files "$alias")
+  done
+
+  while IFS= read -r key; do
     [ -f "$key" ] || continue
     canonical_key="$(canonical_existing_file "$key" || true)"
     [ -n "$canonical_key" ] || continue
@@ -800,25 +971,24 @@ discover_verified_github_identities() {
     checked_keys="${checked_keys}${canonical_key}|"
 
     muted \
-      "Asking GitHub which account accepts key $(human_path "$key") from SSH Host $alias; saved account and repository settings will not be changed." \
-      "正在核对 SSH 主机名 $alias 指定的密钥 $(human_path "$key") 对应哪个 GitHub 账号；这一步不会修改已保存账号或仓库设置。"
-    if identify_key_username "$key"; then
-      if ! verified_identity_index "$VERIFIED_GITHUB_USERNAME" >/dev/null 2>&1; then
-        VERIFIED_IDENTITY_USERNAMES[$VERIFIED_IDENTITY_COUNT]="$VERIFIED_GITHUB_USERNAME"
-        VERIFIED_IDENTITY_ALIASES[$VERIFIED_IDENTITY_COUNT]="$alias"
-        VERIFIED_IDENTITY_FILES[$VERIFIED_IDENTITY_COUNT]="$key"
-        VERIFIED_IDENTITY_COUNT=$((VERIFIED_IDENTITY_COUNT + 1))
-        success \
-          "Found GitHub account: $VERIFIED_GITHUB_USERNAME" \
-          "发现 GitHub 账号：$VERIFIED_GITHUB_USERNAME"
-      fi
+      "Asking GitHub which account accepts unassigned key $(human_path "$key"); saved account and repository settings will not be changed." \
+      "正在核对尚未写入 SSH 主机配置的密钥 $(human_path "$key") 对应哪个 GitHub 账号；这一步不会修改已保存账号或仓库设置。"
+    if identify_key_username "$key" &&
+       ! verified_identity_index "$VERIFIED_GITHUB_USERNAME" >/dev/null 2>&1; then
+      VERIFIED_IDENTITY_USERNAMES[$VERIFIED_IDENTITY_COUNT]="$VERIFIED_GITHUB_USERNAME"
+      VERIFIED_IDENTITY_ALIASES[$VERIFIED_IDENTITY_COUNT]="github.com"
+      VERIFIED_IDENTITY_FILES[$VERIFIED_IDENTITY_COUNT]="$key"
+      VERIFIED_IDENTITY_COUNT=$((VERIFIED_IDENTITY_COUNT + 1))
+      success \
+        "Found GitHub account: $VERIFIED_GITHUB_USERNAME" \
+        "发现 GitHub 账号：$VERIFIED_GITHUB_USERNAME"
     fi
-  done
+  done < <(list_conventional_private_key_files)
 
   if [ "$VERIFIED_IDENTITY_COUNT" -eq 0 ]; then
     muted \
-      "GitHub did not accept any SSH private key referenced by the scanned SSH configuration." \
-      "在已扫描的 SSH 配置中，GitHub 没有接受其中引用的任何私钥。"
+      "GitHub did not accept any private key found through the scanned SSH connections or conventional ~/.ssh/id_* files." \
+      "从已扫描的 SSH 连接和常见 ~/.ssh/id_* 私钥文件中，没有找到 GitHub 接受的密钥。"
   fi
 }
 
@@ -893,13 +1063,65 @@ register_account_and_identity() {
 setup_or_reuse_account() {
   local username="$1"
   local email="$2"
+  local choice=""
 
   if find_local_identity_for_username "$username"; then
     info \
-      "Using local SSH Host $FOUND_SSH_ALIAS and its existing key for account $username. No online identity check is run; git push will provide GitHub's result when needed." \
-      "已找到按账号 ${username} 命名的本机 SSH 主机 ${FOUND_SSH_ALIAS}，将继续使用它指定的现有密钥。这里不会联网预检；需要上传时，由 git push 返回 GitHub 的实际结果。"
+      "Using trusted local mapping for account $username: SSH Host $FOUND_SSH_ALIAS and its existing key. No online identity check is run." \
+      "已找到账号 ${username} 的可信本机绑定，将继续使用 SSH 主机名 ${FOUND_SSH_ALIAS} 及其现有密钥；这里不会联网核对。"
     register_account_and_identity "$username" "$email" "$FOUND_SSH_ALIAS" "$FOUND_IDENTITY_FILE"
     return 0
+  fi
+
+  if configured_github_identity_exists; then
+    heading "Existing SSH keys need account identification" "发现尚未确认账号归属的 SSH 密钥"
+    muted \
+      "This computer already has SSH private keys that may be used with GitHub, but local settings do not establish which one belongs to account $username. The script will not guess or create a duplicate key automatically." \
+      "这台电脑已经存在可能用于 GitHub 的 SSH 私钥，但仅凭本机设置还无法确定哪一把属于账号 ${username}。脚本不会猜测账号归属，也不会直接重复创建密钥。"
+    muted \
+      "The Advanced check contacts GitHub only to identify the existing keys. It does not read, change, or upload any repository." \
+      "高级核对只会连接 GitHub 识别现有密钥对应的账号，不会读取、修改或上传任何仓库。"
+    while true; do
+      if [ "$UI_LANGUAGE" = "zh" ]; then
+        printf '  1) 高级联网核对现有密钥（推荐）\n'
+        printf '  2) 明确为这个账号新建独立密钥\n'
+        printf '  0) 停止，不修改 SSH 配置\n'
+      else
+        printf '  1) Run the Advanced online check for existing keys (recommended)\n'
+        printf '  2) Create a separate key for this account\n'
+        printf '  0) Stop without changing SSH configuration\n'
+      fi
+      choice="$(ui_prompt_value "Choose" "选择" "1")" || return 1
+      case "$choice" in
+        1)
+          info \
+            "Advanced check: asking GitHub which existing key belongs to account $username..." \
+            "高级核对：正在向 GitHub 确认哪一把现有密钥属于账号 ${username}……"
+          if find_verified_identity_for_username "$username" &&
+             ensure_username_alias_for_identity \
+               "$username" "$FOUND_SSH_ALIAS" "$FOUND_IDENTITY_FILE"; then
+            register_account_and_identity \
+              "$username" "$email" "$FOUND_SSH_ALIAS" "$FOUND_IDENTITY_FILE"
+            return 0
+          fi
+          warn \
+            "GitHub did not confirm an existing key for account $username. No key was created." \
+            "GitHub 没有确认现有密钥属于账号 ${username}；脚本尚未创建新密钥。"
+          ;;
+        2)
+          break
+          ;;
+        0)
+          warn \
+            "Stopped without creating a key or changing SSH configuration." \
+            "操作已停止；没有创建密钥，也没有修改 SSH 配置。"
+          return 1
+          ;;
+        *)
+          warn "Enter a number from the list." "请输入列表中的序号。"
+          ;;
+      esac
+    done
   fi
 
   next_available_alias "$username" || return 1

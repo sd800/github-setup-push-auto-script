@@ -214,7 +214,7 @@ test_ssh_config_discovery() {
   SSH_DIRECTORY="$HOME/.ssh"
   SSH_CONFIG_FILE="$SSH_DIRECTORY/config"
   scan_ssh_aliases
-  assert_equal "2" "$DISCOVERED_SSH_ALIAS_COUNT" "discovers aliases through Include files"
+  assert_equal "3" "$DISCOVERED_SSH_ALIAS_COUNT" "discovers aliases through Include files and the effective github.com connection"
   assert_true "recognizes effective GitHub HostName" ssh_alias_is_github "github-work"
   assert_equal \
     "$HOME/.ssh/example" \
@@ -1680,7 +1680,7 @@ test_project_release_policy() {
 
   english_version="$(sed -nE 's/^## ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' "$PROJECT_DIRECTORY/CHANGELOG.md" | sed -n '1p')"
   chinese_version="$(sed -nE 's/^## ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' "$PROJECT_DIRECTORY/CHANGELOG_zh.md" | sed -n '1p')"
-  assert_equal "3.7.5" "$english_version" "English changelog declares release 3.7.5"
+  assert_equal "3.8.1" "$english_version" "English changelog declares release 3.8.1"
   assert_equal "$english_version" "$chinese_version" "English and Chinese changelogs declare the same release"
   if [[ "$english_version" != *4* ]] &&
      [[ "$english_version" =~ ^[1-9][0-9]*\.[1-9][0-9]*\.[1-9][0-9]*$ ]]; then
@@ -1740,6 +1740,140 @@ test_focused_commit_confirmation() {
   eval "$saved_prompt_commit_message"
   GIT_ROOT="$original_root"
   PROJECT_BINDING_REUSED="$original_binding_reused"
+}
+
+test_focused_ssh_and_launcher() {
+  local identity_home="$TEST_TEMPORARY/focused-identity-home"
+  local engine_repository="$TEST_TEMPORARY/focused-engine"
+  local legacy_key="$identity_home/.ssh/id_ed25519_github800"
+  local stale_named_key="$identity_home/.ssh/id_stale_named"
+  local first_key="$identity_home/.ssh/id_first"
+  local second_key="$identity_home/.ssh/id_second"
+  local unassigned_key="$identity_home/.ssh/id_unassigned"
+  local launcher_project="$TEST_TEMPORARY/folder-input-project"
+  local fake_engine_directory="$TEST_TEMPORARY/fake-central"
+  local private_launcher_directory="$TEST_TEMPORARY/private-launcher"
+  local canonical_launcher_project=""
+  local original_engine_directory="$ENGINE_DIRECTORY"
+  local original_engine_path="$ENGINE_PATH"
+  local original_private_directory="$PRIVATE_DIRECTORY"
+  local original_ssh_directory="$SSH_DIRECTORY"
+  local original_ssh_config_file="$SSH_CONFIG_FILE"
+  local saved_identify_key_username=""
+  local saved_register_account_and_identity=""
+  local saved_create_new_identity=""
+  local registered_mapping=""
+  local create_call_count=0
+  local output=""
+  local status=0
+
+  mkdir -p "$identity_home/.ssh" "$engine_repository"
+  : > "$legacy_key"
+  : > "$stale_named_key"
+  printf 'Host github-sd800\n    HostName github.com\n    IdentityFile %s\n\nHost github800\n    HostName github.com\n    User git\n    IdentityFile %s\n    IdentitiesOnly yes\n' \
+    "$stale_named_key" "$legacy_key" > "$identity_home/.ssh/config"
+  git -C "$engine_repository" init -q
+  git -C "$engine_repository" config --local github-auto.username sd800
+  git -C "$engine_repository" config --local github-auto.ssh-alias github800
+  git -C "$engine_repository" config --local github-auto.identity-file "$legacy_key"
+
+  ENGINE_DIRECTORY="$engine_repository"
+  SSH_DIRECTORY="$identity_home/.ssh"
+  SSH_CONFIG_FILE="$SSH_DIRECTORY/config"
+  if find_local_identity_for_username sd800; then
+    assert_equal "github800|$legacy_key" "$FOUND_SSH_ALIAS|$FOUND_IDENTITY_FILE" \
+      "an exact central mapping takes priority over a stale username-shaped SSH Host"
+  else
+    fail_test "an exact central mapping takes priority over a stale username-shaped SSH Host"
+  fi
+  saved_register_account_and_identity="$(declare -f register_account_and_identity)"
+  saved_create_new_identity="$(declare -f create_new_identity)"
+  register_account_and_identity() {
+    registered_mapping="$1|$3|$4"
+  }
+  create_new_identity() {
+    create_call_count=$((create_call_count + 1))
+    return 1
+  }
+  if setup_or_reuse_account sd800 sd800@users.noreply.github.com >/dev/null 2>&1; then
+    assert_equal "sd800|github800|$legacy_key|0" \
+      "$registered_mapping|$create_call_count" \
+      "ordinary account setup reuses the exact key without entering key creation"
+  else
+    fail_test "ordinary account setup reuses the exact key without entering key creation"
+  fi
+  eval "$saved_register_account_and_identity"
+  eval "$saved_create_new_identity"
+
+  : > "$first_key"
+  : > "$second_key"
+  printf 'Host github-multi\n    HostName github.com\n    IdentityFile %s\n    IdentityFile %s\n' \
+    "$first_key" "$second_key" > "$identity_home/.ssh/config"
+  saved_identify_key_username="$(declare -f identify_key_username)"
+  identify_key_username() {
+    SSH_VERIFICATION_OUTPUT=""
+    if [ "$1" = "$second_key" ]; then
+      VERIFIED_GITHUB_USERNAME="sd800"
+    else
+      VERIFIED_GITHUB_USERNAME="another-account"
+    fi
+    return 0
+  }
+  if find_verified_identity_for_username sd800 github-multi; then
+    assert_equal "$second_key" "$FOUND_IDENTITY_FILE" \
+      "Advanced SSH discovery checks every existing identity listed for one Host"
+  else
+    fail_test "Advanced SSH discovery checks every existing identity listed for one Host"
+  fi
+  eval "$saved_identify_key_username"
+
+  printf '%s\n' '-----BEGIN OPENSSH PRIVATE KEY-----' > "$unassigned_key"
+  : > "$identity_home/.ssh/config"
+  if configured_github_identity_exists; then
+    pass "an unassigned conventional private key prevents ordinary setup from defaulting to another key"
+  else
+    fail_test "an unassigned conventional private key prevents ordinary setup from defaulting to another key"
+  fi
+  if grep -Fq -- '-o BatchMode=yes' "$PROJECT_DIRECTORY/src/10-ssh.sh"; then
+    pass "Advanced identity checks cannot pause for an unexpected key passphrase prompt"
+  else
+    fail_test "Advanced identity checks cannot pause for an unexpected key passphrase prompt"
+  fi
+
+  mkdir -p "$launcher_project" "$fake_engine_directory"
+  canonical_launcher_project="$({ cd "$launcher_project" && pwd -P; })"
+  cp "$PROJECT_DIRECTORY/g.sh" "$launcher_project/g.sh"
+  chmod 755 "$launcher_project/g.sh"
+  printf '#!/usr/bin/env bash\nprintf "folder-launch:%%s:%%s\\n" "$GIT_AUTO_PROJECT_ROOT" "${1:-}"\n' \
+    > "$fake_engine_directory/git-auto.sh"
+  output="$(
+    cd "$launcher_project" &&
+      printf '%s\n' "$fake_engine_directory" | bash ./g.sh probe 2>&1
+  )" || status=$?
+  if [ "$status" -eq 0 ] &&
+     printf '%s\n' "$output" | grep -Fq "folder-launch:$canonical_launcher_project:probe"; then
+    pass "public g.sh accepts the folder containing git-auto.sh"
+  else
+    fail_test "public g.sh accepts the folder containing git-auto.sh"
+  fi
+
+  ENGINE_DIRECTORY="$PROJECT_DIRECTORY"
+  ENGINE_PATH="$fake_engine_directory/git-auto.sh"
+  PRIVATE_DIRECTORY="$private_launcher_directory"
+  if write_private_launcher &&
+     grep -Fq "DEFAULT_ENGINE_PATH='$fake_engine_directory/git-auto.sh'" \
+       "$private_launcher_directory/g.sh" &&
+     bash -n "$private_launcher_directory/g.sh"; then
+    pass "private g.sh is copy-ready with the central engine path built in"
+  else
+    fail_test "private g.sh is copy-ready with the central engine path built in"
+  fi
+
+  ENGINE_DIRECTORY="$original_engine_directory"
+  ENGINE_PATH="$original_engine_path"
+  PRIVATE_DIRECTORY="$original_private_directory"
+  SSH_DIRECTORY="$original_ssh_directory"
+  SSH_CONFIG_FILE="$original_ssh_config_file"
 }
 
 test_focused_history_confirmation() {
@@ -1925,6 +2059,18 @@ if [ "${1:-}" = "--commit-confirmation" ]; then
   exit 0
 fi
 
+if [ "${1:-}" = "--ssh-launcher" ]; then
+  printf 'TAP version 13\n'
+  test_focused_ssh_and_launcher
+  printf '1..%s\n' "$TEST_COUNT"
+  if [ "$FAILURE_COUNT" -gt 0 ]; then
+    printf '%s test(s) failed\n' "$FAILURE_COUNT" >&2
+    exit 1
+  fi
+  printf 'Focused tests passed.\n'
+  exit 0
+fi
+
 printf 'TAP version 13\n'
 test_accounts
 test_prompt_values
@@ -1951,6 +2097,7 @@ test_historical_release_import
 test_paged_account_selection
 test_user_interface_symbols
 test_project_release_policy
+test_focused_ssh_and_launcher
 printf '1..%s\n' "$TEST_COUNT"
 
 if [ "$FAILURE_COUNT" -gt 0 ]; then
