@@ -2,7 +2,7 @@
 
 # Auto Script for GitHub Setup and Push
 
-[Chinese](README_zh.md)
+[Simplified Chinese](README_zh.md)
 
 Auto Script for GitHub Setup and Push is a centralized Bash utility for anyone who wants a shorter path from local changes to a GitHub push while keeping each repository on one explicit account and SSH key. A small `git-auto.sh` dispatcher loads the central implementation from `src/`, while each project uses the same small `g.sh` interface.
 

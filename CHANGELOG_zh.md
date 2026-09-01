@@ -6,6 +6,12 @@
 
 Auto Script for GitHub Setup and Push 的重要变更记录在此文件中。
 
+## 3.10.3 - 2026-09-01
+
+### 变更
+
+- 英文 README 与变更日志中的语言链接由 `Chinese` 改为更准确的 `Simplified Chinese`。
+
 ## 3.10.2 - 2026-09-01
 
 ### 变更

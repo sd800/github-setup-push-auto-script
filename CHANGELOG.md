@@ -2,9 +2,15 @@
 
 # Changelog
 
-[Chinese](CHANGELOG_zh.md)
+[Simplified Chinese](CHANGELOG_zh.md)
 
 All notable changes to Auto Script for GitHub Setup and Push are documented in this file.
+
+## 3.10.3 - 2026-09-01
+
+### Changed
+
+- Renamed the English README and changelog language link from `Chinese` to `Simplified Chinese` for greater specificity.
 
 ## 3.10.2 - 2026-09-01
 
