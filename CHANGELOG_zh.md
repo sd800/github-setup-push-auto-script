@@ -6,6 +6,12 @@
 
 Auto Script for GitHub Setup and Push 的重要变更记录在此文件中。
 
+## 3.10.2 - 2026-09-01
+
+### 变更
+
+- 将 MIT License 的版权所有者由 `sd800` 改为 `Songming.org`。
+
 ## 3.10.1 - 2026-09-01
 
 ### 变更

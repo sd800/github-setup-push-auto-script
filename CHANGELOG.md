@@ -6,6 +6,12 @@
 
 All notable changes to Auto Script for GitHub Setup and Push are documented in this file.
 
+## 3.10.2 - 2026-09-01
+
+### Changed
+
+- Changed the MIT License copyright holder from `sd800` to `Songming.org`.
+
 ## 3.10.1 - 2026-09-01
 
 ### Changed
