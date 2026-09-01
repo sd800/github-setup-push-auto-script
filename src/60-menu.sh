@@ -292,6 +292,7 @@ run_central_menu() {
   while true; do
     heading "Auto Script for GitHub Setup and Push" \
       "Auto Script for GitHub Setup and Push"
+    muted "by Songming.org in 2026" "by Songming.org in 2026"
     muted \
       "Central engine: $ENGINE_PATH" \
       "中央脚本：$ENGINE_PATH"
@@ -593,6 +594,7 @@ run_menu() {
   require_interactive
   while true; do
     heading "Auto Script for GitHub Setup and Push"
+    muted "by Songming.org in 2026" "by Songming.org in 2026"
     if [ "$UI_LANGUAGE" = "zh" ]; then
       printf '  1) 提交并上传当前项目\n'
       printf '  2) 添加 GitHub 账号\n'

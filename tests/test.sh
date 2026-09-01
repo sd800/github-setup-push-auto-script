@@ -820,11 +820,11 @@ test_public_documentation() {
   local english_versions=""
   local chinese_versions=""
 
-  if grep -Fxq '[Chinese](README_zh.md)' "$PROJECT_DIRECTORY/README.md" &&
+  if grep -Fxq '[Simplified Chinese](README_zh.md)' "$PROJECT_DIRECTORY/README.md" &&
      ! grep -Fq '[English](' "$PROJECT_DIRECTORY/README.md"; then
-    pass "English README links only to Chinese"
+    pass "English README links only to Simplified Chinese"
   else
-    fail_test "English README links only to Chinese"
+    fail_test "English README links only to Simplified Chinese"
   fi
 
   if grep -Fxq '[English](README.md)' "$PROJECT_DIRECTORY/README_zh.md" &&
@@ -834,11 +834,11 @@ test_public_documentation() {
     fail_test "Chinese README links only to English"
   fi
 
-  if grep -Fxq '[Chinese](CHANGELOG_zh.md)' "$PROJECT_DIRECTORY/CHANGELOG.md" &&
+  if grep -Fxq '[Simplified Chinese](CHANGELOG_zh.md)' "$PROJECT_DIRECTORY/CHANGELOG.md" &&
      ! grep -Fq '[English](' "$PROJECT_DIRECTORY/CHANGELOG.md"; then
-    pass "English changelog links only to Chinese"
+    pass "English changelog links only to Simplified Chinese"
   else
-    fail_test "English changelog links only to Chinese"
+    fail_test "English changelog links only to Simplified Chinese"
   fi
 
   if grep -Fxq '[English](CHANGELOG.md)' "$PROJECT_DIRECTORY/CHANGELOG_zh.md" &&
@@ -1682,7 +1682,7 @@ test_project_release_policy() {
 
   english_version="$(sed -nE 's/^## ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' "$PROJECT_DIRECTORY/CHANGELOG.md" | sed -n '1p')"
   chinese_version="$(sed -nE 's/^## ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' "$PROJECT_DIRECTORY/CHANGELOG_zh.md" | sed -n '1p')"
-  assert_equal "3.10.3" "$english_version" "English changelog declares release 3.10.3"
+  assert_equal "3.10.5" "$english_version" "English changelog declares release 3.10.5"
   assert_equal "$english_version" "$chinese_version" "English and Chinese changelogs declare the same release"
   if [[ "$english_version" != *4* ]] &&
      [[ "$english_version" =~ ^[1-9][0-9]*\.[1-9][0-9]*\.[1-9][0-9]*$ ]]; then
@@ -2165,6 +2165,12 @@ test_user_interface_symbols() {
     pass "menu exposes language selection and advanced features in both interfaces"
   else
     fail_test "menu exposes language selection and advanced features in both interfaces"
+  fi
+
+  if [ "$(grep -Fc 'muted "by Songming.org in 2026" "by Songming.org in 2026"' "$script_file")" -eq 2 ]; then
+    pass "both menus show the same untranslated title credit in English and Chinese"
+  else
+    fail_test "both menus show the same untranslated title credit in English and Chinese"
   fi
 
   if grep -Fq '    update)' "$script_file" &&

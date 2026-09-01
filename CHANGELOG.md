@@ -6,6 +6,12 @@
 
 All notable changes to Auto Script for GitHub Setup and Push are documented in this file.
 
+## 3.10.5 - 2026-09-01
+
+### Changed
+
+- Refined the title presentation in both menu interfaces.
+
 ## 3.10.3 - 2026-09-01
 
 ### Changed
