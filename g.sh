@@ -4,6 +4,11 @@
 
 set -u
 
+# Keep launcher-level Git lookups noninteractive. The central engine repeats
+# this guard for every Git command after dispatch.
+GIT_PAGER=cat
+export GIT_PAGER
+
 PROJECT_ROOT="$({ cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P; } || exit 1)"
 DEFAULT_ENGINE_PATH=""
 

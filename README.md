@@ -19,7 +19,7 @@ SSH identities, account verification, repository-specific authorship, release co
 
 ## Engineering rule
 
-Fast, convenient, and simple is also the implementation rule. Ordinary commands use the smallest correct Git and SSH operations: complete local state is reused, dependencies are checked only when a feature needs them, and safety comes from native atomic Git controls instead of duplicated preflight work. Optional `ssh -T`, `git ls-remote`, and account-discovery checks are available only under Advanced features. A routine push therefore makes no extra network request before the required `git push`.
+Fast, convenient, and simple is also the implementation rule. Ordinary commands use the smallest correct Git and SSH operations: complete local state is reused, dependencies are checked only when a feature needs them, and safety comes from native atomic Git controls instead of duplicated preflight work. Optional `ssh -T`, `git ls-remote`, and account-discovery checks are available only under Advanced features. A routine push therefore makes no extra network request before the required `git push`. Git output never opens an interactive pager, and SSH keepalives return control when an established connection becomes unresponsive.
 
 ## Architecture
 

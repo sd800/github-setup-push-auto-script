@@ -311,6 +311,8 @@ identify_key_username() {
       -o PasswordAuthentication=no \
       -o BatchMode=yes \
       -o ConnectTimeout=12 \
+      -o ServerAliveInterval=15 \
+      -o ServerAliveCountMax=2 \
       -i "$private_key" \
       github.com \
       2>&1

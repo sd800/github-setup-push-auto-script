@@ -637,7 +637,9 @@ create_pinned_ssh_wrapper() {
       '-o PreferredAuthentications=publickey' \
       '-o PasswordAuthentication=no' \
       '-o ConnectTimeout=8' \
-      '-o ConnectionAttempts=1'
+      '-o ConnectionAttempts=1' \
+      '-o ServerAliveInterval=15' \
+      '-o ServerAliveCountMax=2'
     printf '%s ' '-i "$GITHUB_AUTO_IDENTITY_FILE"'
     printf '"$@"\n'
   } > "$PINNED_SSH_WRAPPER"

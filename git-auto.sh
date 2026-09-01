@@ -13,6 +13,11 @@
 
 set -uo pipefail
 
+# Never hand terminal control to a user-configured Git pager. Commands that
+# directly display lists also use --no-pager as a local safeguard.
+GIT_PAGER=cat
+export GIT_PAGER
+
 LANGUAGE_FIELD_PREFIX="language:"
 THEME_FIELD_PREFIX="display-theme:"
 SSH_BLOCK_PREFIX="github-auto"

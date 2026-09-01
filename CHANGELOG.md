@@ -6,6 +6,17 @@
 
 All notable changes to Auto Script for GitHub Setup and Push are documented in this file.
 
+## 3.9.3 - 2026-09-01
+
+### Changed
+
+- Added a process-wide `GIT_PAGER=cat` guard in both the lightweight launcher and central engine, while retaining command-level `--no-pager` protection for displayed lists. Future Git commands inherit noninteractive output automatically without modifying the user's Git configuration.
+- Added SSH keepalive checks to pinned push transport and Advanced identity verification. A connection that becomes unresponsive after it is established now returns a normal failure instead of waiting indefinitely; visible key-passphrase prompts remain supported.
+
+### Tests
+
+- Expanded focused checks to cover the launcher and engine pager guards plus keepalive settings in both ordinary and Advanced SSH paths.
+
 ## 3.9.2 - 2026-09-01
 
 ### Fixed

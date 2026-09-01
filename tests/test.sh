@@ -320,7 +320,9 @@ test_git_binding_and_commit() {
   create_pinned_ssh_wrapper
   if grep -Fq 'IdentitiesOnly=yes' "$PINNED_SSH_WRAPPER" &&
      grep -Fq 'GITHUB_AUTO_IDENTITY_FILE' "$PINNED_SSH_WRAPPER" &&
-     grep -Fq 'ConnectTimeout=8' "$PINNED_SSH_WRAPPER"; then
+     grep -Fq 'ConnectTimeout=8' "$PINNED_SSH_WRAPPER" &&
+     grep -Fq 'ServerAliveInterval=15' "$PINNED_SSH_WRAPPER" &&
+     grep -Fq 'ServerAliveCountMax=2' "$PINNED_SSH_WRAPPER"; then
     pass "pinned SSH wrapper forces one identity"
   else
     fail_test "pinned SSH wrapper forces one identity"
@@ -1680,7 +1682,7 @@ test_project_release_policy() {
 
   english_version="$(sed -nE 's/^## ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' "$PROJECT_DIRECTORY/CHANGELOG.md" | sed -n '1p')"
   chinese_version="$(sed -nE 's/^## ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' "$PROJECT_DIRECTORY/CHANGELOG_zh.md" | sed -n '1p')"
-  assert_equal "3.9.2" "$english_version" "English changelog declares release 3.9.2"
+  assert_equal "3.9.3" "$english_version" "English changelog declares release 3.9.3"
   assert_equal "$english_version" "$chinese_version" "English and Chinese changelogs declare the same release"
   if [[ "$english_version" != *4* ]] &&
      [[ "$english_version" =~ ^[1-9][0-9]*\.[1-9][0-9]*\.[1-9][0-9]*$ ]]; then
@@ -2018,19 +2020,30 @@ test_focused_ssh_and_launcher() {
   else
     fail_test "Advanced identity checks cannot pause for an unexpected key passphrase prompt"
   fi
+  if grep -Fq 'GIT_PAGER=cat' "$PROJECT_DIRECTORY/g.sh" &&
+     grep -Fq 'GIT_PAGER=cat' "$PROJECT_DIRECTORY/git-auto.sh" &&
+     grep -Fq -- '-o ServerAliveInterval=15' "$PROJECT_DIRECTORY/src/10-ssh.sh" &&
+     grep -Fq -- '-o ServerAliveCountMax=2' "$PROJECT_DIRECTORY/src/10-ssh.sh" &&
+     grep -Fq "'-o ServerAliveInterval=15'" "$PROJECT_DIRECTORY/src/30-workflow.sh" &&
+     grep -Fq "'-o ServerAliveCountMax=2'" "$PROJECT_DIRECTORY/src/30-workflow.sh"; then
+    pass "launcher, central engine, and Advanced SSH checks prevent unexplained terminal waits"
+  else
+    fail_test "launcher, central engine, and Advanced SSH checks prevent unexplained terminal waits"
+  fi
 
   mkdir -p "$launcher_project" "$fake_engine_directory"
   canonical_launcher_project="$({ cd "$launcher_project" && pwd -P; })"
   cp "$PROJECT_DIRECTORY/g.sh" "$launcher_project/g.sh"
   chmod 755 "$launcher_project/g.sh"
-  printf '#!/usr/bin/env bash\nprintf "folder-launch:%%s:%%s\\n" "$GIT_AUTO_PROJECT_ROOT" "${1:-}"\n' \
+  printf '#!/usr/bin/env bash\nprintf "folder-launch:%%s:%%s:pager=%%s\\n" "$GIT_AUTO_PROJECT_ROOT" "${1:-}" "${GIT_PAGER:-}"\n' \
     > "$fake_engine_directory/git-auto.sh"
   output="$(
     cd "$launcher_project" &&
-      printf '%s\n' "$fake_engine_directory" | bash ./g.sh probe 2>&1
+      printf '%s\n' "$fake_engine_directory" | GIT_PAGER=forbidden-pager bash ./g.sh probe 2>&1
   )" || status=$?
   if [ "$status" -eq 0 ] &&
-     printf '%s\n' "$output" | grep -Fq "folder-launch:$canonical_launcher_project:probe"; then
+     printf '%s\n' "$output" | grep -Fq \
+       "folder-launch:$canonical_launcher_project:probe:pager=cat"; then
     pass "public g.sh accepts the folder containing git-auto.sh"
   else
     fail_test "public g.sh accepts the folder containing git-auto.sh"
