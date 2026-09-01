@@ -1705,7 +1705,7 @@ Choose No: Do not assign historical dates; each commit keeps the local system ti
   fi
 
   advanced_heading "Rebuilt history" "历史重建完成"
-  git -C "$HISTORY_WORK_DIRECTORY" log --oneline --reverse
+  git -C "$HISTORY_WORK_DIRECTORY" --no-pager log --oneline --reverse
   if [ "$HISTORY_REBUILD_DATES" = true ]; then
     advanced_muted \
       "These newly reconstructed commits preserve snapshot order and reliable detected release dates, but cannot restore other missing original commit metadata." \

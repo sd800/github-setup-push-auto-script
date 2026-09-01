@@ -128,7 +128,7 @@ describe_and_validate_project_state() {
     error_message \
       "Unresolved merge conflicts were found. Resolve the files listed by git status before running this script." \
       "检测到尚未解决的合并冲突。请先按照 git status 列出的文件完成处理，再运行本脚本。"
-    git -C "$GIT_ROOT" status --short
+    git -C "$GIT_ROOT" --no-pager status --short
     return 1
   fi
   if git_operation_in_progress; then
@@ -793,7 +793,7 @@ Enter :cancel to stop before staging.
 
 show_staged_changes() {
   heading "Changes in this commit" "本次改动"
-  git -C "$GIT_ROOT" diff --cached --stat
+  git -C "$GIT_ROOT" --no-pager diff --cached --stat
 }
 
 prepare_and_commit() {
@@ -850,7 +850,7 @@ prepare_and_commit() {
     muted \
       "The following output is from git status --short. A means added, M modified, D deleted, and ?? an untracked file." \
       "下面是 git status --short 的结果：A 表示新增，M 表示修改，D 表示删除，?? 表示尚未跟踪的新文件。"
-    git -C "$GIT_ROOT" status --short
+    git -C "$GIT_ROOT" --no-pager status --short
     muted \
       "After the commit message is confirmed, git add -A will include every change shown above, including deletions." \
       "确认提交说明后，脚本会执行 git add -A，把上面显示的全部改动一并纳入提交，其中也包括删除的文件。"

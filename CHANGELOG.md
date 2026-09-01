@@ -6,6 +6,16 @@
 
 All notable changes to Auto Script for GitHub Setup and Push are documented in this file.
 
+## 3.9.2 - 2026-09-01
+
+### Fixed
+
+- Disabled Git's interactive pager for commit change summaries, status output, and reconstructed-history logs. Large first-commit file lists now print normally and continue without waiting for an unexplained `q` keystroke at a `:` prompt.
+
+### Tests
+
+- Added a focused regression check with a deliberately configured pager and verified that the commit workflow never launches it.
+
 ## 3.9.1 - 2026-09-01
 
 ### Changed

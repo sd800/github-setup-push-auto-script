@@ -1680,7 +1680,7 @@ test_project_release_policy() {
 
   english_version="$(sed -nE 's/^## ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' "$PROJECT_DIRECTORY/CHANGELOG.md" | sed -n '1p')"
   chinese_version="$(sed -nE 's/^## ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' "$PROJECT_DIRECTORY/CHANGELOG_zh.md" | sed -n '1p')"
-  assert_equal "3.9.1" "$english_version" "English changelog declares release 3.9.1"
+  assert_equal "3.9.2" "$english_version" "English changelog declares release 3.9.2"
   assert_equal "$english_version" "$chinese_version" "English and Chinese changelogs declare the same release"
   if [[ "$english_version" != *4* ]] &&
      [[ "$english_version" =~ ^[1-9][0-9]*\.[1-9][0-9]*\.[1-9][0-9]*$ ]]; then
@@ -1692,8 +1692,12 @@ test_project_release_policy() {
 
 test_focused_commit_confirmation() {
   local repository="$TEST_TEMPORARY/focused-commit-confirmation"
+  local pager="$TEST_TEMPORARY/forbidden-git-pager"
+  local pager_marker="$TEST_TEMPORARY/git-pager-was-opened"
   local original_root="${GIT_ROOT:-}"
   local original_binding_reused="${PROJECT_BINDING_REUSED:-false}"
+  local original_git_pager="${GIT_PAGER-}"
+  local original_pager_marker="${GIT_AUTO_PAGER_MARKER-}"
   local saved_prompt_commit_message=""
   local prompt_count=0
   local message=""
@@ -1706,8 +1710,13 @@ test_focused_commit_confirmation() {
   git -C "$repository" config user.email tester@example.com
   write_changelog "$repository/CHANGELOG.md" "9.1.2" "9.1.1"
   printf 'first\n' > "$repository/file.txt"
+  printf '#!/usr/bin/env bash\n: > "$GIT_AUTO_PAGER_MARKER"\ncat\n' > "$pager"
+  chmod 700 "$pager"
+  GIT_PAGER="$pager"
+  GIT_AUTO_PAGER_MARKER="$pager_marker"
+  export GIT_PAGER GIT_AUTO_PAGER_MARKER
   GIT_ROOT="$repository"
-  PROJECT_BINDING_REUSED=true
+  PROJECT_BINDING_REUSED=false
 
   saved_prompt_commit_message="$(declare -f prompt_commit_message)"
   prompt_commit_message() {
@@ -1719,8 +1728,14 @@ test_focused_commit_confirmation() {
     message="$(git -C "$repository" log -1 --pretty=%s)"
     assert_equal "1|Release 9.1.2" "$prompt_count|$message" \
       "ordinary commit is created only after its message is confirmed"
+    if [ ! -e "$pager_marker" ]; then
+      pass "commit change summaries never open Git's interactive pager"
+    else
+      fail_test "commit change summaries never open Git's interactive pager"
+    fi
   else
     fail_test "ordinary commit is created only after its message is confirmed"
+    fail_test "commit change summaries never open Git's interactive pager"
   fi
 
   printf 'second\n' >> "$repository/file.txt"
@@ -1738,6 +1753,18 @@ test_focused_commit_confirmation() {
   fi
 
   eval "$saved_prompt_commit_message"
+  if [ -n "$original_git_pager" ]; then
+    GIT_PAGER="$original_git_pager"
+    export GIT_PAGER
+  else
+    unset GIT_PAGER
+  fi
+  if [ -n "$original_pager_marker" ]; then
+    GIT_AUTO_PAGER_MARKER="$original_pager_marker"
+    export GIT_AUTO_PAGER_MARKER
+  else
+    unset GIT_AUTO_PAGER_MARKER
+  fi
   GIT_ROOT="$original_root"
   PROJECT_BINDING_REUSED="$original_binding_reused"
 }
