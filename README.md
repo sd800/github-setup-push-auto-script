@@ -218,14 +218,12 @@ First-time setup and changed or incomplete bindings additionally show the comple
 For every commit, including the first one, release versions are discovered in this order:
 
 1. A valid root `package.json` version.
-2. Root `CHANGELOG`, `CHANGELOG.md`, or `CHANGELOG.txt`.
-3. Other root `CHANGELOG*` language variants, using the highest valid version when they disagree.
-4. When no usable root changelog exists, recursive project-owned `CHANGELOG*` files, using the highest valid version.
-5. Root `VERSION*` files.
-6. Recursive `VERSION*` files.
-7. The fallback message `Update`.
+2. Every project-owned `CHANGELOG*` file in the root and all nested folders, including multilingual variants, using the highest valid version found anywhere in the project.
+3. Root `VERSION*` files.
+4. Recursive `VERSION*` files.
+5. The fallback message `Update`.
 
-Parsing supports newest-first and oldest-first changelogs, common English and Chinese dates, prereleases, build metadata, optional `v` prefixes, brackets, and Unicode dash variants. Dependency, cache, environment, build, and coverage directories are excluded from recursive changelog discovery.
+Parsing supports newest-first and oldest-first changelogs, common English and Chinese dates, prereleases, build metadata, optional `v` prefixes, brackets, and Unicode dash variants. Project-owned release, distribution, and build folders participate in the search. Git metadata, dependency, cache, virtual-environment, and coverage directories are excluded.
 
 ## Historical release import
 

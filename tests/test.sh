@@ -147,9 +147,9 @@ test_version_resolution() {
   write_changelog "$case_directory/CHANGELOG.zh-CN.md" "8.0.0" "7.0.0"
   GIT_ROOT="$case_directory"
   if resolve_release_version; then
-    assert_equal "2.0.0|CHANGELOG.md" "$RELEASE_VERSION|$VERSION_SOURCE" "primary changelog wins over language variants"
+    assert_equal "8.0.0|CHANGELOG.zh-CN.md" "$RELEASE_VERSION|$VERSION_SOURCE" "all changelog names participate in highest-version selection"
   else
-    fail_test "primary changelog wins over language variants"
+    fail_test "all changelog names participate in highest-version selection"
   fi
 
   case_directory="$TEST_TEMPORARY/version-short-package"
@@ -175,14 +175,27 @@ test_version_resolution() {
   fi
 
   case_directory="$TEST_TEMPORARY/version-recursive"
-  mkdir -p "$case_directory/app" "$case_directory/node_modules/dependency"
+  mkdir -p "$case_directory/app" "$case_directory/dist/archive" "$case_directory/node_modules/dependency"
+  write_changelog "$case_directory/CHANGELOG.md" "2.0.0" "1.0.0"
   write_changelog "$case_directory/app/CHANGELOG.fr.md" "5.0.0" "4.0.0"
+  write_changelog "$case_directory/dist/archive/CHANGELOG_zh.md" "6.0.0" "5.0.0"
   write_changelog "$case_directory/node_modules/dependency/CHANGELOG.md" "99.0.0" "98.0.0"
   GIT_ROOT="$case_directory"
   if resolve_release_version; then
-    assert_equal "5.0.0|app/CHANGELOG.fr.md" "$RELEASE_VERSION|$VERSION_SOURCE" "recursive scan skips dependency directories"
+    assert_equal "6.0.0|dist/archive/CHANGELOG_zh.md" "$RELEASE_VERSION|$VERSION_SOURCE" "recursive scan includes all project folders and skips dependencies"
   else
-    fail_test "recursive scan skips dependency directories"
+    fail_test "recursive scan includes all project folders and skips dependencies"
+  fi
+
+  case_directory="$TEST_TEMPORARY/version-recursive-tie"
+  mkdir -p "$case_directory/app"
+  write_changelog "$case_directory/CHANGELOG_zh.md" "7.0.0" "6.0.0"
+  write_changelog "$case_directory/app/CHANGELOG.md" "7.0.0" "6.0.0"
+  GIT_ROOT="$case_directory"
+  if resolve_release_version; then
+    assert_equal "7.0.0|CHANGELOG_zh.md" "$RELEASE_VERSION|$VERSION_SOURCE" "an equal root version remains the preferred source"
+  else
+    fail_test "an equal root version remains the preferred source"
   fi
 
   case_directory="$TEST_TEMPORARY/version-file"
@@ -1682,7 +1695,7 @@ test_project_release_policy() {
 
   english_version="$(sed -nE 's/^## ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' "$PROJECT_DIRECTORY/CHANGELOG.md" | sed -n '1p')"
   chinese_version="$(sed -nE 's/^## ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' "$PROJECT_DIRECTORY/CHANGELOG_zh.md" | sed -n '1p')"
-  assert_equal "3.10.5" "$english_version" "English changelog declares release 3.10.5"
+  assert_equal "3.10.6" "$english_version" "English changelog declares release 3.10.6"
   assert_equal "$english_version" "$chinese_version" "English and Chinese changelogs declare the same release"
   if [[ "$english_version" != *4* ]] &&
      [[ "$english_version" =~ ^[1-9][0-9]*\.[1-9][0-9]*\.[1-9][0-9]*$ ]]; then
@@ -2262,6 +2275,19 @@ test_user_interface_symbols() {
     fail_test "both README versions document the engineering rule and non-empty history handoff"
   fi
 }
+
+if [ "${1:-}" = "--version-resolution" ]; then
+  printf 'TAP version 13\n'
+  test_version_resolution
+  test_project_release_policy
+  printf '1..%s\n' "$TEST_COUNT"
+  if [ "$FAILURE_COUNT" -gt 0 ]; then
+    printf '%s test(s) failed\n' "$FAILURE_COUNT" >&2
+    exit 1
+  fi
+  printf 'Focused tests passed.\n'
+  exit 0
+fi
 
 if [ "${1:-}" = "--commit-confirmation" ]; then
   printf 'TAP version 13\n'

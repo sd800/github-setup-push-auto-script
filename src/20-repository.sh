@@ -473,91 +473,42 @@ except Exception:
   return 1
 }
 
-changelog_basename_kind() {
-  local name_lc
-
-  name_lc="$(lowercase "$1")"
-  case "$name_lc" in
-    changelog)
-      printf '0'
-      ;;
-    changelog.md)
-      printf '1'
-      ;;
-    changelog.txt)
-      printf '2'
-      ;;
-    changelog*)
-      printf 'language'
-      ;;
-    *)
-      printf 'none'
-      ;;
-  esac
-}
-
-select_changelog_result() {
-  local file="$1"
-  local status=0
-
-  if extract_version_from_changelog "$file"; then
-    RELEASE_VERSION="$CHANGELOG_EXTRACTED_VERSION"
-    VERSION_SOURCE="${file#"$GIT_ROOT"/}"
-    VERSION_POSITION="$CHANGELOG_POSITION"
-    return 0
-  else
-    status=$?
-    if [ "$status" -eq 2 ]; then
-      warn \
-        "Skipped a file with ambiguous version order: ${file#"$GIT_ROOT"/}" \
-        "已跳过版本顺序不明确的文件：${file#"$GIT_ROOT"/}"
-    fi
-  fi
-  return 1
-}
-
-resolve_root_primary_changelog() {
-  local priority=0
-  local file=""
-  local name=""
-  local kind=""
-
-  while [ "$priority" -le 2 ]; do
-    for file in "$GIT_ROOT"/*; do
-      [ -f "$file" ] || continue
-      name="$(basename "$file")"
-      kind="$(changelog_basename_kind "$name")"
-      [ "$kind" = "$priority" ] || continue
-      if select_changelog_result "$file"; then
-        return 0
-      fi
-    done
-    priority=$((priority + 1))
-  done
-  return 1
-}
-
 resolve_highest_changelog_from_stream() {
   local file=""
   local best_version=""
   local best_file=""
   local best_position=""
+  local best_relative=""
+  local best_depth=0
+  local relative=""
+  local depth=0
+  local choose=false
   local status=0
 
   while IFS= read -r file; do
     [ -f "$file" ] || continue
     if extract_version_from_changelog "$file"; then
+      relative="${file#"$GIT_ROOT"/}"
+      depth="$(printf '%s' "$relative" | awk -F/ '{ print NF }')"
+      choose=false
       if [ -z "$best_version" ]; then
-        best_version="$CHANGELOG_EXTRACTED_VERSION"
-        best_file="$file"
-        best_position="$CHANGELOG_POSITION"
+        choose=true
       else
         compare_semver "$CHANGELOG_EXTRACTED_VERSION" "$best_version"
         if [ "$SEMVER_COMPARISON" -gt 0 ]; then
-          best_version="$CHANGELOG_EXTRACTED_VERSION"
-          best_file="$file"
-          best_position="$CHANGELOG_POSITION"
+          choose=true
+        elif [ "$SEMVER_COMPARISON" -eq 0 ] &&
+             { [ "$depth" -lt "$best_depth" ] ||
+               { [ "$depth" -eq "$best_depth" ] && [[ "$relative" < "$best_relative" ]]; }; }; then
+          choose=true
         fi
+      fi
+      if [ "$choose" = true ]; then
+        best_version="$CHANGELOG_EXTRACTED_VERSION"
+        best_file="$file"
+        best_position="$CHANGELOG_POSITION"
+        best_relative="$relative"
+        best_depth="$depth"
       fi
     else
       status=$?
@@ -578,31 +529,7 @@ resolve_highest_changelog_from_stream() {
   return 1
 }
 
-resolve_root_language_changelogs() {
-  local file=""
-  local name=""
-  local kind=""
-  local temporary=""
-
-  temporary="$(safe_mktemp_file "${TMPDIR:-/tmp}" "changelogs")" || return 1
-  for file in "$GIT_ROOT"/*; do
-    [ -f "$file" ] || continue
-    name="$(basename "$file")"
-    kind="$(changelog_basename_kind "$name")"
-    if [ "$kind" = "language" ]; then
-      printf '%s\n' "$file" >> "$temporary"
-    fi
-  done
-
-  if resolve_highest_changelog_from_stream < "$temporary"; then
-    rm -f "$temporary"
-    return 0
-  fi
-  rm -f "$temporary"
-  return 1
-}
-
-resolve_recursive_changelogs() {
+resolve_project_changelogs() {
   local temporary=""
 
   temporary="$(safe_mktemp_file "${TMPDIR:-/tmp}" "changelogs")" || return 1
@@ -613,23 +540,17 @@ resolve_recursive_changelogs() {
       -name vendor -o \
       -name .venv -o \
       -name venv -o \
-      -name dist -o \
-      -name build -o \
       -name coverage -o \
       -name .cache -o \
       -name __pycache__ \
     \) -prune \) -o \
-    \( -type f -iname 'CHANGELOG*' -print \) > "$temporary"
+    \( -type f -iname 'CHANGELOG*' -print \) | LC_ALL=C sort > "$temporary"
 
-  # Root files were already considered with stronger precedence.
-  awk -v root="$GIT_ROOT" 'index($0, root "/") == 1 && index(substr($0, length(root) + 2), "/") > 0' \
-    "$temporary" > "${temporary}.nested"
-
-  if resolve_highest_changelog_from_stream < "${temporary}.nested"; then
-    rm -f "$temporary" "${temporary}.nested"
+  if resolve_highest_changelog_from_stream < "$temporary"; then
+    rm -f "$temporary"
     return 0
   fi
-  rm -f "$temporary" "${temporary}.nested"
+  rm -f "$temporary"
   return 1
 }
 
@@ -763,13 +684,7 @@ resolve_release_version() {
     return 0
   fi
 
-  if resolve_root_primary_changelog; then
-    return 0
-  fi
-  if resolve_root_language_changelogs; then
-    return 0
-  fi
-  if resolve_recursive_changelogs; then
+  if resolve_project_changelogs; then
     return 0
   fi
   if resolve_version_files; then

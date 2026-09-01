@@ -6,6 +6,17 @@
 
 All notable changes to Auto Script for GitHub Setup and Push are documented in this file.
 
+## 3.10.6 - 2026-09-01
+
+### Changed
+
+- Expanded release-version discovery to search every project-owned folder for `CHANGELOG*` files, including multilingual variants, and select the highest valid version across the complete candidate set.
+- Included project-owned distribution and build folders in changelog discovery while continuing to exclude Git metadata, dependencies, caches, virtual environments, and coverage output.
+
+### Tests
+
+- Updated version-resolution coverage for competing root, nested, multilingual, distribution, and dependency changelogs.
+
 ## 3.10.5 - 2026-09-01
 
 ### Changed
