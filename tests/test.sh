@@ -1680,7 +1680,7 @@ test_project_release_policy() {
 
   english_version="$(sed -nE 's/^## ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' "$PROJECT_DIRECTORY/CHANGELOG.md" | sed -n '1p')"
   chinese_version="$(sed -nE 's/^## ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' "$PROJECT_DIRECTORY/CHANGELOG_zh.md" | sed -n '1p')"
-  assert_equal "3.8.1" "$english_version" "English changelog declares release 3.8.1"
+  assert_equal "3.9.1" "$english_version" "English changelog declares release 3.9.1"
   assert_equal "$english_version" "$chinese_version" "English and Chinese changelogs declare the same release"
   if [[ "$english_version" != *4* ]] &&
      [[ "$english_version" =~ ^[1-9][0-9]*\.[1-9][0-9]*\.[1-9][0-9]*$ ]]; then
@@ -1745,11 +1745,13 @@ test_focused_commit_confirmation() {
 test_focused_ssh_and_launcher() {
   local identity_home="$TEST_TEMPORARY/focused-identity-home"
   local engine_repository="$TEST_TEMPORARY/focused-engine"
+  local binding_repository="$TEST_TEMPORARY/focused-binding"
   local legacy_key="$identity_home/.ssh/id_ed25519_github800"
   local stale_named_key="$identity_home/.ssh/id_stale_named"
   local first_key="$identity_home/.ssh/id_first"
   local second_key="$identity_home/.ssh/id_second"
   local unassigned_key="$identity_home/.ssh/id_unassigned"
+  local real_ssh_config="$identity_home/.ssh/config.real"
   local launcher_project="$TEST_TEMPORARY/folder-input-project"
   local fake_engine_directory="$TEST_TEMPORARY/fake-central"
   local private_launcher_directory="$TEST_TEMPORARY/private-launcher"
@@ -1759,11 +1761,19 @@ test_focused_ssh_and_launcher() {
   local original_private_directory="$PRIVATE_DIRECTORY"
   local original_ssh_directory="$SSH_DIRECTORY"
   local original_ssh_config_file="$SSH_CONFIG_FILE"
+  local original_root="${GIT_ROOT:-}"
   local saved_identify_key_username=""
   local saved_register_account_and_identity=""
   local saved_create_new_identity=""
+  local saved_advanced_prompt_value=""
+  local saved_advanced_select_account_for_history=""
+  local saved_advanced_verify_key_matches_username=""
+  local saved_advanced_verify_repository_access=""
+  local saved_run_git_with_identity=""
+  local push_marker="$TEST_TEMPORARY/focused-push-target"
   local registered_mapping=""
   local create_call_count=0
+  local duplicate_history_identity_checks=0
   local output=""
   local status=0
 
@@ -1827,8 +1837,150 @@ test_focused_ssh_and_launcher() {
   fi
   eval "$saved_identify_key_username"
 
+  mv "$identity_home/.ssh/config" "$real_ssh_config"
+  ln -s "$(basename "$real_ssh_config")" "$identity_home/.ssh/config"
+  SSH_CONFIG_FILE="$identity_home/.ssh/config"
+  if ensure_username_alias_for_identity sd800 github-multi "$second_key" &&
+     [ -L "$SSH_CONFIG_FILE" ] &&
+     same_existing_file \
+       "$(resolve_alias_identity_file "$FOUND_SSH_ALIAS" || true)" \
+       "$second_key"; then
+    assert_equal "github-sd800" "$FOUND_SSH_ALIAS" \
+      "a multi-key legacy Host gets an exact username Host instead of reusing its first key"
+    pass "updating SSH aliases preserves a symlinked ~/.ssh/config"
+  else
+    fail_test "a multi-key legacy Host gets an exact username Host instead of reusing its first key"
+    fail_test "updating SSH aliases preserves a symlinked ~/.ssh/config"
+  fi
+
+  mkdir -p "$binding_repository"
+  git -C "$binding_repository" init -q
+  git -C "$binding_repository" remote add origin git@github-sd800:sd800/example.git
+  git -C "$binding_repository" config --local --add remote.origin.pushurl git@github-sd800:sd800/example.git
+  git -C "$binding_repository" config --local user.name sd800
+  git -C "$binding_repository" config --local user.email sd800@example.com
+  git -C "$binding_repository" config --local github-auto.username sd800
+  git -C "$binding_repository" config --local github-auto.ssh-alias github-sd800
+  git -C "$binding_repository" config --local github-auto.identity-file "$second_key"
+  git -C "$binding_repository" config --local github-auto.engine /old/git-auto.sh
+  GIT_ROOT="$binding_repository"
+  CURRENT_REPOSITORY_OWNER="sd800"
+  CURRENT_REPOSITORY_NAME="example"
+  ACCOUNT_USERNAMES=("sd800")
+  ACCOUNT_EMAILS=("sd800@example.com")
+  ACCOUNT_COUNT=1
+  ENGINE_PATH="$PROJECT_DIRECTORY/git-auto.sh"
+  if configure_project "" bind >/dev/null 2>&1 &&
+     [ "$(git -C "$binding_repository" config --local --get github-auto.engine)" = "$ENGINE_PATH" ]; then
+    pass "a complete fast binding silently refreshes only a moved central engine path"
+  else
+    fail_test "a complete fast binding silently refreshes only a moved central engine path"
+  fi
+
+  git -C "$binding_repository" config --local user.email wrong@example.com
+  if load_established_project_binding; then
+    fail_test "fast binding rejects a commit author email that differs from the saved owner account"
+  else
+    pass "fast binding rejects a commit author email that differs from the saved owner account"
+  fi
+  git -C "$binding_repository" config --local user.email sd800@example.com
+  git -C "$binding_repository" remote set-url origin https://github.com/sd800/example.git
+  if load_established_project_binding; then
+    fail_test "fast binding rejects a fetch URL that bypasses the saved account SSH Host"
+  else
+    pass "fast binding rejects a fetch URL that bypasses the saved account SSH Host"
+  fi
+
+  git -C "$binding_repository" remote set-url origin git@github-sd800:sd800/example.git
+  git -C "$binding_repository" remote add other git@github-sd800:sd800/other.git
+  git -C "$binding_repository" branch -M main
+  git -C "$binding_repository" config --local branch.main.remote other
+  git -C "$binding_repository" config --local branch.main.merge refs/heads/main
+  BOUND_USERNAME="sd800"
+  BOUND_EMAIL="sd800@example.com"
+  BOUND_SSH_ALIAS="github-sd800"
+  BOUND_IDENTITY_FILE="$second_key"
+  saved_run_git_with_identity="$(declare -f run_git_with_identity)"
+  run_git_with_identity() {
+    shift
+    printf '%s\n' "$*" > "$push_marker"
+    return 0
+  }
+  if push_current_branch >/dev/null 2>&1 &&
+     [ "$(cat "$push_marker")" = "push -u origin main" ]; then
+    pass "daily push explicitly targets origin and the current branch instead of an unrelated saved upstream"
+  else
+    fail_test "daily push explicitly targets origin and the current branch instead of an unrelated saved upstream"
+  fi
+  eval "$saved_run_git_with_identity"
+
+  : > "$real_ssh_config"
+  git -C "$binding_repository" remote set-url origin git@legacy800:sd800/example.git
+  git -C "$binding_repository" config --local --replace-all remote.origin.pushurl git@legacy800:sd800/example.git
+  git -C "$binding_repository" config --local github-auto.ssh-alias legacy800
+  git -C "$binding_repository" config --local github-auto.identity-file "$second_key"
+  if read_origin_repository; then
+    pass "a repository's exact saved custom SSH Host remains parseable while its SSH entry is repaired"
+  else
+    fail_test "a repository's exact saved custom SSH Host remains parseable while its SSH entry is repaired"
+  fi
+
+  ENGINE_DIRECTORY="$fake_engine_directory"
+  BOUND_USERNAME="sd800"
+  BOUND_EMAIL="sd800@example.com"
+  if ensure_bound_identity >/dev/null 2>&1 &&
+     same_existing_file "$BOUND_IDENTITY_FILE" "$second_key" &&
+     [ "$BOUND_SSH_ALIAS" = "github-sd800" ]; then
+    pass "a missing project SSH Host is repaired locally with its saved key instead of creating another key"
+  else
+    fail_test "a missing project SSH Host is repaired locally with its saved key instead of creating another key"
+  fi
+
+  printf '\nHost legacy-bad\n    HostName github.com\n    IdentityFile %s\n' \
+    "$first_key" >> "$real_ssh_config"
+  git -C "$binding_repository" config --local github-auto.ssh-alias legacy-bad
+  if update_resolve_identity_file sd800 >/dev/null 2>&1 &&
+     same_existing_file "$UPDATE_IDENTITY_FILE" "$second_key" &&
+     [ -z "$UPDATE_OLD_ALIAS" ]; then
+    pass "update keeps the project's exact saved key but rejects its inconsistent SSH Host"
+  else
+    fail_test "update keeps the project's exact saved key but rejects its inconsistent SSH Host"
+  fi
+
+  saved_advanced_prompt_value="$(declare -f advanced_prompt_value)"
+  saved_advanced_select_account_for_history="$(declare -f advanced_select_account_for_history)"
+  saved_advanced_verify_key_matches_username="$(declare -f advanced_verify_key_matches_username)"
+  saved_advanced_verify_repository_access="$(declare -f advanced_verify_repository_access)"
+  advanced_prompt_value() {
+    printf 'sd800/example'
+  }
+  advanced_select_account_for_history() {
+    BOUND_USERNAME="sd800"
+    BOUND_EMAIL="sd800@example.com"
+    BOUND_SSH_ALIAS="github-sd800"
+    BOUND_IDENTITY_FILE="$second_key"
+    return 0
+  }
+  advanced_verify_key_matches_username() {
+    duplicate_history_identity_checks=$((duplicate_history_identity_checks + 1))
+    return 0
+  }
+  advanced_verify_repository_access() {
+    return 0
+  }
+  if advanced_prepare_history_destination >/dev/null 2>&1; then
+    assert_equal "0" "$duplicate_history_identity_checks" \
+      "historical import does not repeat the SSH account check already completed during account selection"
+  else
+    fail_test "historical import does not repeat the SSH account check already completed during account selection"
+  fi
+  eval "$saved_advanced_prompt_value"
+  eval "$saved_advanced_select_account_for_history"
+  eval "$saved_advanced_verify_key_matches_username"
+  eval "$saved_advanced_verify_repository_access"
+
   printf '%s\n' '-----BEGIN OPENSSH PRIVATE KEY-----' > "$unassigned_key"
-  : > "$identity_home/.ssh/config"
+  : > "$real_ssh_config"
   if configured_github_identity_exists; then
     pass "an unassigned conventional private key prevents ordinary setup from defaulting to another key"
   else
@@ -1874,6 +2026,7 @@ test_focused_ssh_and_launcher() {
   PRIVATE_DIRECTORY="$original_private_directory"
   SSH_DIRECTORY="$original_ssh_directory"
   SSH_CONFIG_FILE="$original_ssh_config_file"
+  GIT_ROOT="$original_root"
 }
 
 test_focused_history_confirmation() {

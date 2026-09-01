@@ -17,6 +17,7 @@ BOUND_EMAIL=""
 BOUND_SSH_ALIAS=""
 BOUND_IDENTITY_FILE=""
 PROJECT_BINDING_REUSED=false
+PROJECT_BINDING_ENGINE_STALE=false
 
 require_core_commands() {
   local missing=""
@@ -359,12 +360,16 @@ load_established_project_binding() {
   local saved_alias=""
   local saved_key=""
   local alias_key=""
+  local fetch_url=""
   local push_url=""
-  local canonical_saved_key=""
-  local canonical_alias_key=""
+  local expected_url=""
+  local saved_name=""
+  local saved_email=""
+  local saved_engine=""
   local index=""
 
   PROJECT_BINDING_REUSED=false
+  PROJECT_BINDING_ENGINE_STALE=false
   saved_username="$(git -C "$GIT_ROOT" config --local --get github-auto.username 2>/dev/null || true)"
   [ -n "$saved_username" ] || return 1
   [ "$(lowercase "$saved_username")" = "$(lowercase "$CURRENT_REPOSITORY_OWNER")" ] || return 1
@@ -377,22 +382,29 @@ load_established_project_binding() {
   [ -n "$saved_alias" ] && [ -f "$saved_key" ] || return 1
   ssh_alias_is_github "$saved_alias" || return 1
   alias_key="$(resolve_alias_identity_file "$saved_alias" || true)"
-  [ -f "$alias_key" ] || return 1
-  canonical_saved_key="$(canonical_existing_file "$saved_key" || true)"
-  canonical_alias_key="$(canonical_existing_file "$alias_key" || true)"
-  [ -n "$canonical_saved_key" ] && [ "$canonical_saved_key" = "$canonical_alias_key" ] || return 1
+  same_existing_file "$saved_key" "$alias_key" || return 1
 
+  expected_url="git@${saved_alias}:${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME}.git"
+  fetch_url="$(git -C "$GIT_ROOT" remote get-url origin 2>/dev/null || true)"
   push_url="$(git -C "$GIT_ROOT" remote get-url --push origin 2>/dev/null || true)"
-  [ -n "$push_url" ] || return 1
-  parse_repository_input "$push_url" || return 1
-  [ "$(lowercase "$REPOSITORY_OWNER")" = "$(lowercase "$CURRENT_REPOSITORY_OWNER")" ] || return 1
-  [ "$(lowercase "$REPOSITORY_NAME")" = "$(lowercase "$CURRENT_REPOSITORY_NAME")" ] || return 1
+  [ "$fetch_url" = "$expected_url" ] || return 1
+  [ "$push_url" = "$expected_url" ] || return 1
+
+  saved_name="$(git -C "$GIT_ROOT" config --local --get user.name 2>/dev/null || true)"
+  saved_email="$(git -C "$GIT_ROOT" config --local --get user.email 2>/dev/null || true)"
+  [ "$saved_name" = "${ACCOUNT_USERNAMES[$index]}" ] || return 1
+  [ "$saved_email" = "${ACCOUNT_EMAILS[$index]}" ] || return 1
 
   BOUND_USERNAME="${ACCOUNT_USERNAMES[$index]}"
   BOUND_EMAIL="${ACCOUNT_EMAILS[$index]}"
   BOUND_SSH_ALIAS="$saved_alias"
   BOUND_IDENTITY_FILE="$saved_key"
   PROJECT_BINDING_REUSED=true
+
+  saved_engine="$(git -C "$GIT_ROOT" config --local --get github-auto.engine 2>/dev/null || true)"
+  if [ "$saved_engine" != "$ENGINE_PATH" ]; then
+    PROJECT_BINDING_ENGINE_STALE=true
+  fi
   return 0
 }
 
@@ -481,6 +493,10 @@ ensure_bound_identity_with_github_verification() {
          [ "$(lowercase "$VERIFIED_GITHUB_USERNAME")" = "$(lowercase "$BOUND_USERNAME")" ]; then
         BOUND_SSH_ALIAS="$FOUND_UNVERIFIED_SSH_ALIAS"
         BOUND_IDENTITY_FILE="$FOUND_UNVERIFIED_IDENTITY_FILE"
+        ensure_username_alias_for_identity \
+          "$BOUND_USERNAME" "$BOUND_SSH_ALIAS" "$BOUND_IDENTITY_FILE" || return 1
+        BOUND_SSH_ALIAS="$FOUND_SSH_ALIAS"
+        BOUND_IDENTITY_FILE="$FOUND_IDENTITY_FILE"
         success \
           "GitHub confirmed that the existing key belongs to account $BOUND_USERNAME." \
           "GitHub 已确认这把现有密钥属于账号 ${BOUND_USERNAME}。"
@@ -529,8 +545,6 @@ ensure_bound_identity() {
   local preferred_alias=""
   local saved_key=""
   local alias_key=""
-  local canonical_saved_key=""
-  local canonical_alias_key=""
 
   saved_username="$(git -C "$GIT_ROOT" config --local --get github-auto.username 2>/dev/null || true)"
   if [ "$(lowercase "$saved_username")" = "$(lowercase "$BOUND_USERNAME")" ]; then
@@ -540,21 +554,38 @@ ensure_bound_identity() {
     saved_key="${saved_key//%d/${HOME:-}}"
     if [ -n "$preferred_alias" ] && [ -f "$saved_key" ]; then
       alias_key="$(resolve_alias_identity_file "$preferred_alias" || true)"
-      canonical_saved_key="$(canonical_existing_file "$saved_key" || true)"
-      if [ -f "$alias_key" ]; then
-        canonical_alias_key="$(canonical_existing_file "$alias_key" || true)"
-      fi
     fi
-    if [ -z "$preferred_alias" ] ||
-       [ ! -f "$saved_key" ] ||
-       [ ! -f "$alias_key" ] ||
-       [ -z "$canonical_saved_key" ] ||
-       [ "$canonical_saved_key" != "$canonical_alias_key" ]; then
-      preferred_alias=""
+    if same_existing_file "$saved_key" "$alias_key"; then
+      BOUND_SSH_ALIAS="$preferred_alias"
+      BOUND_IDENTITY_FILE="$saved_key"
+      info \
+        "Using the local SSH key assigned to account $BOUND_USERNAME. No online identity precheck is run; git push will return GitHub's actual result." \
+        "正在使用本机为账号 ${BOUND_USERNAME} 指定的 SSH 密钥。这里不会提前联网核对；执行 git push 时，再以 GitHub 的实际返回结果为准。"
+      return 0
+    fi
+
+    if find_engine_identity_for_username "$BOUND_USERNAME"; then
+      BOUND_SSH_ALIAS="$FOUND_SSH_ALIAS"
+      BOUND_IDENTITY_FILE="$FOUND_IDENTITY_FILE"
+      info \
+        "Using the local SSH key assigned to account $BOUND_USERNAME. No online identity precheck is run; git push will return GitHub's actual result." \
+        "正在使用本机为账号 ${BOUND_USERNAME} 指定的 SSH 密钥。这里不会提前联网核对；执行 git push 时，再以 GitHub 的实际返回结果为准。"
+      return 0
+    fi
+
+    if [ -f "$saved_key" ] &&
+       ensure_username_alias_for_identity \
+         "$BOUND_USERNAME" "$preferred_alias" "$saved_key"; then
+      BOUND_SSH_ALIAS="$FOUND_SSH_ALIAS"
+      BOUND_IDENTITY_FILE="$FOUND_IDENTITY_FILE"
+      info \
+        "Repaired the local SSH Host for account $BOUND_USERNAME and kept using this project's saved key. No new key or online identity precheck was needed." \
+        "已修复账号 ${BOUND_USERNAME} 的本机 SSH 主机配置，并继续使用当前项目保存的原密钥；没有创建新密钥，也没有提前联网核对。"
+      return 0
     fi
   fi
 
-  if find_local_identity_for_username "$BOUND_USERNAME" "$preferred_alias"; then
+  if find_local_identity_for_username "$BOUND_USERNAME"; then
     BOUND_SSH_ALIAS="$FOUND_SSH_ALIAS"
     BOUND_IDENTITY_FILE="$FOUND_IDENTITY_FILE"
     info \
@@ -690,6 +721,9 @@ configure_project() {
   fi
 
   if load_established_project_binding; then
+    if [ "$PROJECT_BINDING_ENGINE_STALE" = true ]; then
+      git -C "$GIT_ROOT" config --local github-auto.engine "$ENGINE_PATH" || return 1
+    fi
     if [ -n "$preferred_username" ] &&
        [ "$(lowercase "$preferred_username")" != "$(lowercase "$CURRENT_REPOSITORY_OWNER")" ]; then
       warn \
@@ -881,11 +915,7 @@ push_current_branch() {
     "$BOUND_USERNAME" \
     "$CURRENT_REPOSITORY_OWNER" \
     "$CURRENT_REPOSITORY_NAME"
-  if git -C "$GIT_ROOT" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' >/dev/null 2>&1; then
-    output="$(run_git_with_identity "$BOUND_IDENTITY_FILE" push 2>&1)" || push_status=$?
-  else
-    output="$(run_git_with_identity "$BOUND_IDENTITY_FILE" push -u origin "$branch" 2>&1)" || push_status=$?
-  fi
+  output="$(run_git_with_identity "$BOUND_IDENTITY_FILE" push -u origin "$branch" 2>&1)" || push_status=$?
   if [ "$push_status" -ne 0 ]; then
     [ -z "$output" ] || printf '%s\n' "$output" >&2
     explain_push_failure "$output" "$branch"

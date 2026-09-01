@@ -9,6 +9,9 @@ REPOSITORY_INPUT_HOST=""
 github_host_or_alias() {
   local host="$1"
   local host_without_port=""
+  local saved_alias=""
+  local saved_username=""
+  local project_root=""
 
   host_without_port="${host%%:*}"
   case "$(lowercase "$host_without_port")" in
@@ -19,6 +22,18 @@ github_host_or_alias() {
 
   if ssh_alias_is_github "$host_without_port"; then
     return 0
+  fi
+
+  if [ -n "${GIT_ROOT:-}" ]; then
+    project_root="$(git -C "$GIT_ROOT" rev-parse --show-toplevel 2>/dev/null || true)"
+    if [ -n "$project_root" ] && [ "$project_root" -ef "$GIT_ROOT" ]; then
+      saved_alias="$(git -C "$GIT_ROOT" config --local --get github-auto.ssh-alias 2>/dev/null || true)"
+      saved_username="$(git -C "$GIT_ROOT" config --local --get github-auto.username 2>/dev/null || true)"
+      if [ -n "$saved_username" ] &&
+         [ "$(lowercase "$saved_alias")" = "$(lowercase "$host_without_port")" ]; then
+        return 0
+      fi
+    fi
   fi
 
   return 1
@@ -763,4 +778,3 @@ resolve_release_version() {
 
   return 1
 }
-

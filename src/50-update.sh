@@ -159,7 +159,6 @@ update_resolve_identity_file() {
   local expected_username="$1"
   local saved_key=""
   local saved_alias=""
-  local resolved_key=""
 
   UPDATE_IDENTITY_FILE=""
   UPDATE_OLD_ALIAS=""
@@ -176,23 +175,16 @@ update_resolve_identity_file() {
   fi
   if [ -n "$saved_key" ] && [ -f "$saved_key" ]; then
     UPDATE_IDENTITY_FILE="$saved_key"
-    UPDATE_OLD_ALIAS="$saved_alias"
-    return 0
-  fi
-
-  if [ -n "$saved_alias" ]; then
-    resolved_key="$(resolve_alias_identity_file "$saved_alias" || true)"
-    if [ -n "$resolved_key" ] && [ -f "$resolved_key" ]; then
-      UPDATE_IDENTITY_FILE="$resolved_key"
+    if update_alias_points_to_key "$saved_alias" "$saved_key"; then
       UPDATE_OLD_ALIAS="$saved_alias"
-      return 0
     fi
+    return 0
   fi
 
   advanced_info \
     "Looking for the account key already configured on this computer..." \
     "正在查找这台电脑上已经配置好的账号密钥……"
-  if find_local_identity_for_username "$expected_username" "$saved_alias"; then
+  if find_local_identity_for_username "$expected_username"; then
     UPDATE_IDENTITY_FILE="$FOUND_IDENTITY_FILE"
     UPDATE_OLD_ALIAS="$FOUND_SSH_ALIAS"
     return 0
@@ -249,16 +241,11 @@ update_alias_points_to_key() {
   local alias="$1"
   local expected_key="$2"
   local alias_key=""
-  local canonical_alias_key=""
-  local canonical_expected_key=""
 
   [ -n "$alias" ] || return 1
   ssh_alias_is_github "$alias" || return 1
   alias_key="$(resolve_alias_identity_file "$alias" || true)"
-  [ -f "$alias_key" ] || return 1
-  canonical_alias_key="$(canonical_existing_file "$alias_key" || true)"
-  canonical_expected_key="$(canonical_existing_file "$expected_key" || true)"
-  [ -n "$canonical_alias_key" ] && [ "$canonical_alias_key" = "$canonical_expected_key" ]
+  same_existing_file "$alias_key" "$expected_key"
 }
 
 update_find_named_alias_for_key() {

@@ -180,6 +180,8 @@ check_saved_account_identity() {
          [ "$(lowercase "$VERIFIED_GITHUB_USERNAME")" = "$(lowercase "$username")" ]; then
         FOUND_SSH_ALIAS="$FOUND_UNVERIFIED_SSH_ALIAS"
         FOUND_IDENTITY_FILE="$FOUND_UNVERIFIED_IDENTITY_FILE"
+        ensure_username_alias_for_identity \
+          "$username" "$FOUND_SSH_ALIAS" "$FOUND_IDENTITY_FILE" || return 1
         success \
           "GitHub confirmed that the existing key belongs to account $username." \
           "GitHub 已确认这把现有密钥属于账号 ${username}。"

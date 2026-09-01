@@ -102,7 +102,7 @@ The public `g.sh` contains no GitHub account, SSH, version, commit, or history-b
 
 The root `g.sh` is tracked and is never placed in this repository's ignore rules. When the central menu copies it into another project, only that project copy is added to `.git/info/exclude`; the project's shared `.gitignore` is not changed. After a project is configured successfully, the resolved central path is remembered in that project's local `.git/config`. The launcher itself remains generic and contains no personal path.
 
-If the central folder moves, paste the new folder path or complete `git-auto.sh` path once, or use the central menu to repair the project launcher. The new exact path is saved locally; no project data or account configuration needs to be rebuilt. Central management and the central repository's own `g.sh` also refresh the ignored `private/g.sh`; launchers in other projects do no extra maintenance work during a routine push.
+If the central folder moves, paste the new folder path or complete `git-auto.sh` path once, or use the central menu to repair the project launcher. The new exact path is refreshed locally without rebuilding project or account configuration. Central management and the central repository's own `g.sh` also refresh the ignored `private/g.sh`; launchers in other projects do no extra maintenance work during a routine push.
 
 ## Private configuration
 
@@ -146,9 +146,9 @@ The default workflow follows the state of the project:
 2. Detect an existing Git repository before doing anything else. Existing commits, branches, staged changes, and remotes are preserved, and `git init` is not run again. If no repository exists, the script explains that `git init` creates local metadata only, then initializes it.
 3. Stop before changing files when HEAD is detached, merge conflicts remain, or a merge, rebase, cherry-pick, or revert is unfinished.
 4. Read `origin` to determine the exact GitHub `owner/repository`. Ask for a repository address only when `origin` does not identify one.
-5. Use only the saved account whose username matches the repository owner, and pin its one local SSH key. A mismatched saved account or default `github.com` key is never used as a fallback.
-6. If local owner, key, or origin settings are missing, collect only the missing information and save the local binding. This setup does not run an online precheck.
-7. Run `git add -A`, create `Release X.Y.Z` automatically when changes exist, and run `git push`. The required push is the ordinary workflow's only GitHub connection.
+5. Reuse the fast path only when the saved owner, commit name, email, SSH Host, exact private key, and both `origin` URLs agree. Otherwise repair only the incomplete local settings without an online precheck.
+6. Use only the account whose username matches the repository owner, and pin its one local SSH key. A mismatched account or default `github.com` key is never used as a fallback.
+7. Run `git add -A`, create `Release X.Y.Z` automatically when changes exist, and push the current branch explicitly to `origin`. An unrelated saved upstream cannot redirect this push; it remains the ordinary workflow's only GitHub connection.
 8. Keep optional SSH authentication, account discovery, and read-only repository checks under Advanced features.
 9. If push fails, keep the local commit and explain whether GitHub reported divergent history, an identity or repository rejection, a connection problem, or another exact Git error. Ordinary pushes never use force.
 
@@ -159,13 +159,13 @@ A clean repository creates no unnecessary commit. An empty repository with no pr
 Inside a project with a recognizable GitHub `origin`, `./g.sh new` derives the required username from the repository owner and never offers another account. Outside such a project, the central account menu can add any personal account. Ordinary setup follows these rules:
 
 1. In a project, request only the owner account's commit email when that account is not already saved.
-2. Reuse identities in this order: the project's complete exact mapping, the central repository's complete mapping for the same owner, then a Host following the `github-USERNAME` naming convention. An incomplete project mapping must still resolve its saved Host to its exact saved private key.
+2. Reuse identities in this order: the project's complete exact mapping, the central repository's complete mapping for the same owner, then a Host following the `github-USERNAME` naming convention. If a project's saved Host was removed or now points elsewhere but its exact saved key still exists, add a collision-safe username Host for that same key instead of creating another key.
 3. If other GitHub keys exist but their local names do not establish which account owns them, do not guess or default to creating another key. Offer an explicit Advanced online identity check, an explicit new-key choice, or cancellation.
 4. If no local GitHub identity exists, show the exact key path and SSH Host before creating a dedicated ED25519 key.
 5. Guide the user through adding the public key to the correct GitHub account, then save the local account-to-key mapping.
 6. Do not run `ssh -T` or a repository read unless the user explicitly selects the Advanced identity check. The next normal `git push` returns GitHub's actual result.
 
-New SSH Host names use `github-USERNAME`. Collisions are handled automatically with `-1`, `-2`, and later numbers. Each newly created account receives a different private key. Advanced features inspect explicit Hosts, included and wildcard settings, the effective default `github.com` connection, every existing identity file listed for those connections, and conventional `~/.ssh/id_*` private keys not yet assigned to a Host. They can ask GitHub which account accepts each distinct key and import a confirmed identity under a username-based alias. These checks are noninteractive: a locked or unusable key fails cleanly instead of opening an unexpected passphrase prompt.
+New SSH Host names use `github-USERNAME`. Collisions are handled automatically with `-1`, `-2`, and later numbers. Each newly created account receives a different private key. When adding an exact Host, the script preserves a symlinked `~/.ssh/config`, quotes the key path, and verifies that the effective Host selects that exact file before saving. Advanced features inspect explicit Hosts, included and wildcard settings, the effective default `github.com` connection, every existing identity file listed for those connections, and conventional `~/.ssh/id_*` private keys not yet assigned to a Host. They can ask GitHub which account accepts each distinct key and import a confirmed identity under a username-based alias. These checks are noninteractive: a locked or unusable key fails cleanly instead of opening an unexpected passphrase prompt.
 
 The local default is `USERNAME@users.noreply.github.com`. You can replace it with the exact private address shown by GitHub, including the `ID+USERNAME@users.noreply.github.com` form, or any email already verified for that account.
 
@@ -173,7 +173,7 @@ The local default is `USERNAME@users.noreply.github.com`. You can replace it wit
 
 The shared private profile makes configured accounts available to every project, but each repository uses only the account whose username matches the repository owner.
 
-Repository-specific values remain only in that repository's `.git/config`: username, email, SSH alias, identity file, and normalized `origin`. Before each network operation, a temporary SSH wrapper enables `IdentitiesOnly=yes` and pins the selected private key. Other agent-loaded keys cannot silently become fallback identities.
+Repository-specific values remain only in that repository's `.git/config`: username, email, SSH alias, identity file, and normalized fetch and push URLs for `origin`. A complete binding requires all of them to agree. Before each network operation, a temporary SSH wrapper enables `IdentitiesOnly=yes` and pins the selected private key. Other agent-loaded keys cannot silently become fallback identities.
 
 This strict owner-account workflow intentionally stops when `owner/repository` belongs to a different username. It never treats the ability to read a public repository as permission to bind or push it from another configured account.
 

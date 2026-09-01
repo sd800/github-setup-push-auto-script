@@ -6,6 +6,27 @@
 
 All notable changes to Auto Script for GitHub Setup and Push are documented in this file.
 
+## 3.9.1 - 2026-09-01
+
+### Changed
+
+- Tightened the established-project fast path so it is used only when the saved owner, commit name, email, SSH Host, exact key, and both `origin` URLs agree. A moved central engine path is refreshed locally without repeating account setup.
+- Made every routine upload explicitly push the current branch to `origin`, so an unrelated saved upstream or push default cannot redirect the operation.
+- Reused a project's exact saved key when its old SSH Host is missing or no longer selects that key. The local repair creates a collision-safe username Host without a new key or online precheck.
+- Removed the extra SSH-account verification that historical import repeated immediately after its account-selection check, and stopped preloading newly created keys into `ssh-agent` as a separate step.
+
+### Fixed
+
+- Prevented multi-key and stale username Hosts from being accepted unless their effective first identity is the exact verified or saved key.
+- Preserved symlinked SSH configuration files when adding a Host, resolved chained file links safely, quoted key paths, and validated the exact effective key before replacing the configuration target.
+- Kept a repository's exact saved custom SSH Host parseable while a missing SSH entry is repaired, without accepting arbitrary unconfigured aliases.
+- Made `update` keep the project's exact saved key while rejecting an inconsistent saved Host, so alias repair cannot silently switch to the different key selected by that Host.
+- Normalized an identity found by an Advanced retry to a stable username Host instead of leaving a legacy multi-key Host in the saved binding.
+
+### Tests
+
+- Added focused coverage for fast-binding authorship and fetch/push consistency, moved-engine refresh, exact push targeting, multi-key Hosts, symlinked SSH configuration, missing-alias repair, `update` fallback, custom-origin recovery, and the single historical identity check.
+
 ## 3.8.1 - 2026-09-01
 
 ### Changed

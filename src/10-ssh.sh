@@ -20,10 +20,32 @@ ensure_home_available() {
 
 canonical_existing_file() {
   local file="$1"
-  local directory
+  local directory=""
+  local target=""
+  local links=0
 
+  [ -e "$file" ] || return 1
+  while [ -L "$file" ]; do
+    links=$((links + 1))
+    [ "$links" -le 40 ] || return 1
+    target="$(readlink "$file" 2>/dev/null || true)"
+    [ -n "$target" ] || return 1
+    case "$target" in
+      /*)
+        file="$target"
+        ;;
+      *)
+        file="$(dirname "$file")/$target"
+        ;;
+    esac
+    [ -e "$file" ] || return 1
+  done
   directory="$({ cd "$(dirname "$file")" 2>/dev/null && pwd -P; } || return 1)"
   printf '%s/%s' "$directory" "$(basename "$file")"
+}
+
+same_existing_file() {
+  [ -f "$1" ] && [ -f "$2" ] && [ "$1" -ef "$2" ]
 }
 
 strip_optional_quotes() {
@@ -522,8 +544,6 @@ find_engine_identity_for_username() {
   local saved_alias=""
   local saved_key=""
   local alias_key=""
-  local canonical_saved_key=""
-  local canonical_alias_key=""
   local engine_git_root=""
 
   engine_git_root="$(git -C "$ENGINE_DIRECTORY" rev-parse --show-toplevel 2>/dev/null || true)"
@@ -539,10 +559,7 @@ find_engine_identity_for_username() {
   ssh_alias_is_github "$saved_alias" || return 1
 
   alias_key="$(resolve_alias_identity_file "$saved_alias" || true)"
-  canonical_saved_key="$(canonical_existing_file "$saved_key" || true)"
-  canonical_alias_key="$(canonical_existing_file "$alias_key" || true)"
-  [ -n "$canonical_saved_key" ] &&
-    [ "$canonical_saved_key" = "$canonical_alias_key" ] || return 1
+  same_existing_file "$saved_key" "$alias_key" || return 1
 
   FOUND_SSH_ALIAS="$saved_alias"
   FOUND_IDENTITY_FILE="$saved_key"
@@ -575,21 +592,21 @@ ensure_username_alias_for_identity() {
   local username_lc=""
   local alias=""
   local key=""
-  local canonical_identity=""
-  local canonical_key=""
   local index=0
 
   username_lc="$(lowercase "$username")"
+  [ -f "$identity_file" ] || return 1
   case "$(lowercase "$current_alias")" in
     "github-$username_lc"|"github-$username_lc-"[0-9]*)
-      FOUND_SSH_ALIAS="$current_alias"
-      FOUND_IDENTITY_FILE="$identity_file"
-      return 0
+      key="$(resolve_alias_identity_file "$current_alias" || true)"
+      if same_existing_file "$identity_file" "$key"; then
+        FOUND_SSH_ALIAS="$current_alias"
+        FOUND_IDENTITY_FILE="$identity_file"
+        return 0
+      fi
       ;;
   esac
 
-  canonical_identity="$(canonical_existing_file "$identity_file" || true)"
-  [ -n "$canonical_identity" ] || return 1
   scan_ssh_aliases || return 1
   while [ "$index" -lt "$DISCOVERED_SSH_ALIAS_COUNT" ]; do
     alias="${DISCOVERED_SSH_ALIASES[$index]}"
@@ -597,8 +614,7 @@ ensure_username_alias_for_identity() {
     case "$(lowercase "$alias")" in
       "github-$username_lc"|"github-$username_lc-"[0-9]*)
         key="$(resolve_alias_identity_file "$alias" || true)"
-        canonical_key="$(canonical_existing_file "$key" || true)"
-        if [ -n "$canonical_key" ] && [ "$canonical_key" = "$canonical_identity" ]; then
+        if same_existing_file "$key" "$identity_file"; then
           FOUND_SSH_ALIAS="$alias"
           FOUND_IDENTITY_FILE="$identity_file"
           return 0
@@ -617,16 +633,13 @@ ensure_username_alias_for_identity() {
 find_github_alias_for_identity_file() {
   local identity_file="$1"
   local preferred_alias="${2:-}"
-  local canonical_identity=""
-  local canonical_candidate=""
   local alias=""
   local candidate_key=""
   local index=0
   local pass=0
 
   FOUND_SSH_ALIAS=""
-  canonical_identity="$(canonical_existing_file "$identity_file" || true)"
-  [ -n "$canonical_identity" ] || return 1
+  [ -f "$identity_file" ] || return 1
   scan_ssh_aliases || return 1
 
   while [ "$pass" -lt 2 ]; do
@@ -642,9 +655,7 @@ find_github_alias_for_identity_file() {
 
       ssh_alias_is_github "$alias" || continue
       candidate_key="$(resolve_alias_identity_file "$alias" || true)"
-      canonical_candidate="$(canonical_existing_file "$candidate_key" || true)"
-      if [ -n "$canonical_candidate" ] &&
-         [ "$canonical_candidate" = "$canonical_identity" ]; then
+      if same_existing_file "$candidate_key" "$identity_file"; then
         FOUND_SSH_ALIAS="$alias"
         return 0
       fi
@@ -712,21 +723,31 @@ install_ssh_alias_block() {
   local display_key=""
   local resolved_hostname=""
   local resolved_identity=""
+  local config_write_file=""
+  local write_directory=""
+  local escaped_key=""
 
   ensure_ssh_storage
-  temporary_file="$(safe_mktemp_file "$SSH_DIRECTORY" "config")" ||
+  config_write_file="$SSH_CONFIG_FILE"
+  if [ -L "$SSH_CONFIG_FILE" ]; then
+    config_write_file="$(canonical_existing_file "$SSH_CONFIG_FILE")" || return 1
+  fi
+  write_directory="$({ cd "$(dirname "$config_write_file")" 2>/dev/null && pwd -P; } || return 1)"
+  config_write_file="$write_directory/$(basename "$config_write_file")"
+  temporary_file="$(safe_mktemp_file "$write_directory" "config")" ||
     fail \
       "A temporary SSH configuration file could not be created." \
       "无法创建 SSH 配置临时文件。"
 
   display_key="$(human_path "$private_key")"
+  escaped_key="$(printf '%s' "$display_key" | sed 's/\\/\\\\/g; s/"/\\"/g')"
 
   {
     printf '# >>> %s:%s >>>\n' "$SSH_BLOCK_PREFIX" "$username"
     printf 'Host %s\n' "$alias"
     printf '    HostName github.com\n'
     printf '    User git\n'
-    printf '    IdentityFile %s\n' "$display_key"
+    printf '    IdentityFile "%s"\n' "$escaped_key"
     printf '    IdentitiesOnly yes\n'
     printf '    AddKeysToAgent yes\n'
     if [ "$(uname -s 2>/dev/null || true)" = "Darwin" ]; then
@@ -753,34 +774,23 @@ install_ssh_alias_block() {
     ssh -F "$temporary_file" -G "$alias" 2>/dev/null |
       awk 'tolower($1) == "identityfile" { $1=""; sub(/^[[:space:]]+/, ""); print; exit }'
   )"
+  resolved_identity="$(expand_home_path "$resolved_identity")"
+  resolved_identity="${resolved_identity//%d/${HOME:-}}"
 
-  if [ "$(lowercase "$resolved_hostname")" != "github.com" ] || [ -z "$resolved_identity" ]; then
+  if [ "$(lowercase "$resolved_hostname")" != "github.com" ] ||
+     ! same_existing_file "$resolved_identity" "$private_key"; then
     rm -f "$temporary_file"
     fail \
       "The new SSH configuration failed validation. The original configuration was kept." \
       "新的 SSH 配置没有通过验证，原配置保持不变。"
   fi
 
-  mv "$temporary_file" "$SSH_CONFIG_FILE" || {
+  mv "$temporary_file" "$config_write_file" || {
     rm -f "$temporary_file"
     fail \
       "The SSH configuration could not be saved." \
       "无法保存 SSH 配置。"
   }
-}
-
-try_add_key_to_agent() {
-  local private_key="$1"
-
-  [ -n "${SSH_AUTH_SOCK:-}" ] || return 0
-  command_exists ssh-add || return 0
-
-  if [ "$(uname -s 2>/dev/null || true)" = "Darwin" ]; then
-    ssh-add --apple-use-keychain "$private_key" >/dev/null 2>&1 ||
-      ssh-add "$private_key" >/dev/null 2>&1 || true
-  else
-    ssh-add "$private_key" >/dev/null 2>&1 || true
-  fi
 }
 
 copy_public_key() {
@@ -847,7 +857,6 @@ create_new_identity() {
   chmod 644 "${NEW_IDENTITY_FILE}.pub" || true
 
   install_ssh_alias_block "$username" "$NEW_SSH_ALIAS" "$NEW_IDENTITY_FILE"
-  try_add_key_to_agent "$NEW_IDENTITY_FILE"
 
   public_key="${NEW_IDENTITY_FILE}.pub"
   heading "Add the public key to the correct GitHub account" "把公钥添加到正确的 GitHub 账号"

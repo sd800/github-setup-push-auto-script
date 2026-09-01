@@ -1150,9 +1150,6 @@ advanced_prepare_history_destination() {
   if [ "$selection_status" -ne 0 ]; then
     return "$selection_status"
   fi
-  if ! advanced_verify_key_matches_username "$BOUND_IDENTITY_FILE" "$BOUND_USERNAME"; then
-    return 1
-  fi
   remote_url="git@${BOUND_SSH_ALIAS}:${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME}.git"
   advanced_verify_repository_access "$remote_url" || return 1
   HISTORY_REMOTE_URL="$remote_url"
