@@ -1429,6 +1429,13 @@ test_historical_release_import() {
   HISTORY_GITIGNORE_CONTENT="*.tmp
 .cache/"
   ADVANCED_LANGUAGE="en"
+  HISTORY_COMMITS_CONFIRMED=false
+  if history_build_repository; then
+    fail_test "historical builder refuses unconfirmed commits"
+  else
+    pass "historical builder refuses unconfirmed commits"
+  fi
+  HISTORY_COMMITS_CONFIRMED=true
 
   if history_build_repository; then
     pass "builds a temporary historical release repository"
@@ -1673,7 +1680,7 @@ test_project_release_policy() {
 
   english_version="$(sed -nE 's/^## ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' "$PROJECT_DIRECTORY/CHANGELOG.md" | sed -n '1p')"
   chinese_version="$(sed -nE 's/^## ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' "$PROJECT_DIRECTORY/CHANGELOG_zh.md" | sed -n '1p')"
-  assert_equal "3.6.2" "$english_version" "English changelog declares release 3.6.2"
+  assert_equal "3.7.3" "$english_version" "English changelog declares release 3.7.3"
   assert_equal "$english_version" "$chinese_version" "English and Chinese changelogs declare the same release"
   if [[ "$english_version" != *4* ]] &&
      [[ "$english_version" =~ ^[1-9][0-9]*\.[1-9][0-9]*\.[1-9][0-9]*$ ]]; then
@@ -1681,6 +1688,105 @@ test_project_release_policy() {
   else
     fail_test "new project release obeys the no-4 and no-zero-component rule"
   fi
+}
+
+test_focused_commit_confirmation() {
+  local repository="$TEST_TEMPORARY/focused-commit-confirmation"
+  local original_root="${GIT_ROOT:-}"
+  local original_binding_reused="${PROJECT_BINDING_REUSED:-false}"
+  local saved_prompt_commit_message=""
+  local prompt_count=0
+  local message=""
+  local before_head=""
+  local status=0
+
+  mkdir -p "$repository"
+  git -C "$repository" init -q
+  git -C "$repository" config user.name tester
+  git -C "$repository" config user.email tester@example.com
+  write_changelog "$repository/CHANGELOG.md" "9.1.2" "9.1.1"
+  printf 'first\n' > "$repository/file.txt"
+  GIT_ROOT="$repository"
+  PROJECT_BINDING_REUSED=true
+
+  saved_prompt_commit_message="$(declare -f prompt_commit_message)"
+  prompt_commit_message() {
+    prompt_count=$((prompt_count + 1))
+    COMMIT_MESSAGE="$1"
+    return 0
+  }
+  if prepare_and_commit >/dev/null 2>&1; then
+    message="$(git -C "$repository" log -1 --pretty=%s)"
+    assert_equal "1|Release 9.1.2" "$prompt_count|$message" \
+      "ordinary commit is created only after its message is confirmed"
+  else
+    fail_test "ordinary commit is created only after its message is confirmed"
+  fi
+
+  printf 'second\n' >> "$repository/file.txt"
+  before_head="$(git -C "$repository" rev-parse HEAD)"
+  prompt_commit_message() {
+    return 2
+  }
+  prepare_and_commit >/dev/null 2>&1 || status=$?
+  if [ "$status" -eq 2 ] &&
+     [ "$(git -C "$repository" rev-parse HEAD)" = "$before_head" ] &&
+     git -C "$repository" diff --cached --quiet; then
+    pass "declining commit confirmation stops before staging"
+  else
+    fail_test "declining commit confirmation stops before staging"
+  fi
+
+  eval "$saved_prompt_commit_message"
+  GIT_ROOT="$original_root"
+  PROJECT_BINDING_REUSED="$original_binding_reused"
+}
+
+test_focused_history_confirmation() {
+  local release_directory="$TEST_TEMPORARY/focused-history-release"
+  local fake_key="$TEST_TEMPORARY/focused-history-key"
+  local message=""
+
+  mkdir -p "$release_directory"
+  printf 'release\n' > "$release_directory/README.md"
+  : > "$fake_key"
+  reset_history_releases
+  HISTORY_RELEASE_VERSIONS[0]="1.1.1"
+  HISTORY_RELEASE_DIRECTORIES[0]="$release_directory"
+  HISTORY_RELEASE_DATES[0]=""
+  HISTORY_RELEASE_NEEDS_GITIGNORE[0]="no"
+  HISTORY_RELEASE_COUNT=1
+  HISTORY_ADD_GITIGNORE=false
+  HISTORY_REBUILD_DATES=false
+  HISTORY_WORK_DIRECTORY=""
+  CURRENT_REPOSITORY_OWNER="history-user"
+  CURRENT_REPOSITORY_NAME="history-repository"
+  BOUND_USERNAME="history-user"
+  BOUND_EMAIL="history-user@example.com"
+  BOUND_SSH_ALIAS="github-history-user"
+  BOUND_IDENTITY_FILE="$fake_key"
+  HISTORY_REMOTE_URL="$TEST_TEMPORARY/focused-history-remote.git"
+  ADVANCED_LANGUAGE="en"
+
+  HISTORY_COMMITS_CONFIRMED=false
+  if history_build_repository >/dev/null 2>&1; then
+    fail_test "historical builder refuses to create an unconfirmed commit"
+  elif [ -z "$HISTORY_WORK_DIRECTORY" ]; then
+    pass "historical builder refuses to create an unconfirmed commit"
+  else
+    fail_test "historical builder refuses to create an unconfirmed commit"
+  fi
+
+  HISTORY_COMMITS_CONFIRMED=true
+  if history_build_repository >/dev/null 2>&1; then
+    message="$(git -C "$HISTORY_WORK_DIRECTORY" log -1 --pretty=%s)"
+    assert_equal "Release 1.1.1" "$message" \
+      "confirmed historical plan creates its listed commit"
+  else
+    fail_test "confirmed historical plan creates its listed commit"
+  fi
+  history_remove_temporary_directory "$HISTORY_WORK_DIRECTORY" history || true
+  HISTORY_WORK_DIRECTORY=""
 }
 
 test_user_interface_symbols() {
@@ -1805,6 +1911,19 @@ test_user_interface_symbols() {
     fail_test "both README versions document the engineering rule and non-empty history handoff"
   fi
 }
+
+if [ "${1:-}" = "--commit-confirmation" ]; then
+  printf 'TAP version 13\n'
+  test_focused_commit_confirmation
+  test_focused_history_confirmation
+  printf '1..%s\n' "$TEST_COUNT"
+  if [ "$FAILURE_COUNT" -gt 0 ]; then
+    printf '%s test(s) failed\n' "$FAILURE_COUNT" >&2
+    exit 1
+  fi
+  printf 'Focused tests passed.\n'
+  exit 0
+fi
 
 printf 'TAP version 13\n'
 test_accounts

@@ -6,6 +6,21 @@
 
 All notable changes to Auto Script for GitHub Setup and Push are documented in this file.
 
+## 3.7.3 - 2026-09-01
+
+### Changed
+
+- Made prior user confirmation mandatory for every formal commit created by the script. Ordinary and first-time workflows confirm the individual commit message before staging.
+- Historical reconstruction now displays each exact `Release X.Y.Z` message and requests one explicit confirmation for the complete listed batch before creating any commit.
+
+### Fixed
+
+- Added an internal confirmation-state guard so the historical repository builder cannot be called directly to create commits before the user approves the displayed release plan.
+
+### Tests
+
+- Added a focused commit-confirmation test mode covering ordinary approval, cancellation before staging, rejection of unconfirmed historical commits, and creation after batch approval without running unrelated tests.
+
 ## 3.7.2 - 2026-09-01
 
 ### Changed

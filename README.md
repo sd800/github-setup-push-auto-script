@@ -207,7 +207,7 @@ Username changes reuse the existing key, create a collision-safe username-based 
 
 ## Commit messages and release versions
 
-For an established project, `./g.sh` keeps the workflow short: it detects the final commit message, displays it for confirmation, then runs `git add -A`, `git commit -m "Release X.Y.Z"`, and `git push`. Press Enter to accept the proposed message, type a replacement, or enter `:cancel` to stop before staging. With no working-tree changes, the script skips commit and goes directly to push.
+Every formal commit created by the script requires user confirmation first. For an established project, `./g.sh` keeps the workflow short: it detects the final commit message, displays it for confirmation, then runs `git add -A`, `git commit -m "Release X.Y.Z"`, and `git push`. Press Enter to accept the proposed message, type a replacement, or enter `:cancel` to stop before staging. With no working-tree changes, the script skips commit and goes directly to push.
 
 First-time setup and changed or incomplete bindings additionally show the complete working-tree review. A detected release version always takes priority, including when the repository has no earlier commit; `Initial commit` is used only when that first snapshot has no detectable version.
 
@@ -232,6 +232,8 @@ It discovers or accepts version mappings, sorts them by SemVer, and builds one c
 When archived releases lack a root `.gitignore`, the user can paste one shared set of rules directly into the terminal. It is added only to missing reconstructed snapshots and never written back to the source folders.
 
 The flow checks for sensitive-looking and oversized files, displays `git log --oneline --reverse`, and verifies the selected GitHub identity before publishing. Reconstructed commit timestamps use reliable detected release dates by default. The user can decline; in that case, no historical dates are assigned and each commit keeps the local system time that Git records automatically when creating it.
+
+Before creating reconstructed commits, the release plan displays every exact `Release X.Y.Z` message. One explicit batch confirmation covers the listed history; the internal builder refuses to create even the first commit unless that confirmation has been given.
 
 Replacing an existing remote `main` requires explicit confirmation and an exact `--force-with-lease`. No backup branch is created, and other remote branches are unchanged. Historical reconstruction creates release commits only; it does not create or modify Git tags.
 

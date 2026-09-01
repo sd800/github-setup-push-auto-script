@@ -24,6 +24,7 @@ HISTORY_GITIGNORE_CONTENT=""
 HISTORY_ADD_GITIGNORE=false
 HISTORY_WORK_DIRECTORY=""
 HISTORY_REBUILD_DATES=true
+HISTORY_COMMITS_CONFIRMED=false
 
 advanced_heading() {
   if [ "$ADVANCED_LANGUAGE" = "en" ]; then
@@ -824,7 +825,7 @@ history_show_release_plan() {
       label="$(paged_choice_label "$((index - start))")" || return 1
       printf '  %s) %s  [%s%s]\n' \
         "$label" \
-        "${HISTORY_RELEASE_VERSIONS[$index]}" \
+        "Release ${HISTORY_RELEASE_VERSIONS[$index]}" \
         "$date_label" \
         "$gitignore_label"
       printf '     %s\n' "${HISTORY_RELEASE_DIRECTORIES[$index]}"
@@ -1240,6 +1241,14 @@ history_build_repository() {
   local short_commit=""
   local GIT_ROOT=""
 
+  if [ "$HISTORY_COMMITS_CONFIRMED" != true ]; then
+    advanced_error \
+      "History construction cannot create commits until the listed commit messages are confirmed." \
+      "尚未确认刚才列出的提交说明，不能开始创建历史提交。"
+    return 1
+  fi
+  HISTORY_COMMITS_CONFIRMED=false
+
   require_repository_account_match || return 1
   work_directory="$(mktemp -d "$(history_temporary_base)/github-auto-history.XXXXXX")" || return 1
   HISTORY_WORK_DIRECTORY="$work_directory"
@@ -1581,6 +1590,7 @@ run_historical_release_import() {
   reset_history_releases
   HISTORY_WORK_DIRECTORY=""
   HISTORY_REBUILD_DATES=true
+  HISTORY_COMMITS_CONFIRMED=false
 
   advanced_heading "Rebuild Git history from historical releases" "用历史版本文件夹重建 Git 历史"
   advanced_muted \
@@ -1680,11 +1690,12 @@ Choose No: Do not assign historical dates; each commit keeps the local system ti
       "提交时间：不写入历史日期；每个提交保留 Git 创建它时自动记录的本机时间。"
   fi
   if ! advanced_prompt_yes_no \
-    "Build the temporary repository now without uploading it?" \
-    "现在只创建临时仓库、暂不上传吗？" \
+    "Create every listed Release X.Y.Z commit in the temporary repository now, without uploading?" \
+    "确认按刚才列出的说明创建全部 Release X.Y.Z 提交，并暂不上传吗？" \
     "yes"; then
     return 0
   fi
+  HISTORY_COMMITS_CONFIRMED=true
 
   if ! history_build_repository; then
     advanced_error "History construction stopped." "未能完成历史重建。"
