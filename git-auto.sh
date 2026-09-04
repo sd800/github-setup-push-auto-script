@@ -13,6 +13,15 @@
 
 set -uo pipefail
 
+# A parent shell must not be able to redirect this run to another repository,
+# index, object store, or commit identity.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY \
+  GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE GIT_PREFIX \
+  GIT_CEILING_DIRECTORIES GIT_DISCOVERY_ACROSS_FILESYSTEM \
+  GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_AUTHOR_DATE \
+  GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL GIT_COMMITTER_DATE \
+  GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT
+
 # Never hand terminal control to a user-configured Git pager. Commands that
 # directly display lists also use --no-pager as a local safeguard.
 GIT_PAGER=cat

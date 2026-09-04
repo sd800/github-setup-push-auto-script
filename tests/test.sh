@@ -790,7 +790,8 @@ test_project_launcher() {
   assert_true "generated launcher has valid Bash syntax" bash -n "$launcher_file"
   assert_equal "755" "$(file_mode "$launcher_file")" "generated launcher is executable"
   if [ "$(wc -l < "$launcher_file" | tr -d ' ')" -le 80 ] &&
-     launcher_is_managed "$launcher_file"; then
+     launcher_is_managed "$launcher_file" &&
+     grep -Fq 'GIT_AUTO_LAUNCHER_PROTOCOL=1' "$launcher_file"; then
     pass "generated g.sh stays intentionally small"
   else
     fail_test "generated g.sh stays intentionally small"
@@ -1695,7 +1696,7 @@ test_project_release_policy() {
 
   english_version="$(sed -nE 's/^## ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' "$PROJECT_DIRECTORY/CHANGELOG.md" | sed -n '1p')"
   chinese_version="$(sed -nE 's/^## ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' "$PROJECT_DIRECTORY/CHANGELOG_zh.md" | sed -n '1p')"
-  assert_equal "3.12.1" "$english_version" "English changelog declares release 3.12.1"
+  assert_equal "3.13.1" "$english_version" "English changelog declares release 3.13.1"
   assert_equal "$english_version" "$chinese_version" "English and Chinese changelogs declare the same release"
   if [[ "$english_version" != *4* ]] &&
      [[ "$english_version" =~ ^[1-9][0-9]*\.[1-9][0-9]*\.[1-9][0-9]*$ ]]; then
@@ -1844,7 +1845,8 @@ test_focused_commit_confirmation() {
   if [ "$status" -eq 2 ] &&
      [ "$prompt_count" -eq 0 ] &&
      git -C "$embedded_repository" diff --cached --quiet &&
-     printf '%s\n' "$output" | grep -Fq '?? native-scroll/' &&
+     printf '%s\n' "$output" | grep -Fq 'A  native-scroll/index.js' &&
+     printf '%s\n' "$output" | grep -Fq 'A  native-scroll/package.json' &&
      printf '%s\n' "$output" | grep -Fq 'project marker: package.json' &&
      ! printf '%s\n' "$output" | grep -Fq 'Looking for a release version'; then
     pass "established projects show every change and stop before staging a possible embedded project by default"
@@ -1944,6 +1946,185 @@ test_focused_commit_confirmation() {
   else
     unset GIT_AUTO_PAGER_MARKER
   fi
+  GIT_ROOT="$original_root"
+  PROJECT_BINDING_REUSED="$original_binding_reused"
+}
+
+test_focused_exact_snapshot_edges() {
+  local mixed_repository="$TEST_TEMPORARY/focused-mixed-hidden"
+  local net_zero_repository="$TEST_TEMPORARY/focused-net-zero"
+  local sparse_repository="$TEST_TEMPORARY/focused-sparse"
+  local nested_repository="$TEST_TEMPORARY/focused-nested-repository"
+  local submodule_source="$TEST_TEMPORARY/focused-submodule-source"
+  local submodule_parent="$TEST_TEMPORARY/focused-submodule-parent"
+  local hook_repository="$TEST_TEMPORARY/focused-post-commit-hook"
+  local original_root="${GIT_ROOT:-}"
+  local original_binding_reused="${PROJECT_BINDING_REUSED:-false}"
+  local saved_prompt_commit_message=""
+  local before_cached=""
+  local output=""
+  local status=0
+  local prompt_count=0
+
+  saved_prompt_commit_message="$(declare -f prompt_commit_message)"
+  prompt_commit_message() {
+    prompt_count=$((prompt_count + 1))
+    COMMIT_MESSAGE="$1"
+    return 0
+  }
+  PROJECT_BINDING_REUSED=true
+
+  mkdir -p "$mixed_repository"
+  git -C "$mixed_repository" init -q
+  git -C "$mixed_repository" config user.name tester
+  git -C "$mixed_repository" config user.email tester@example.com
+  printf 'old hidden\n' > "$mixed_repository/hidden.txt"
+  printf 'old visible\n' > "$mixed_repository/visible.txt"
+  printf 'unchanged\n' > "$mixed_repository/untouched.txt"
+  git -C "$mixed_repository" add -A
+  git -C "$mixed_repository" commit -qm baseline
+  git -C "$mixed_repository" update-index --assume-unchanged hidden.txt untouched.txt
+  printf 'new hidden\n' > "$mixed_repository/hidden.txt"
+  printf 'new visible\n' > "$mixed_repository/visible.txt"
+  GIT_ROOT="$mixed_repository"
+  output="$(prepare_and_commit 2>&1)" || status=$?
+  if [ "$status" -eq 0 ] &&
+     [ "$(git -C "$mixed_repository" show HEAD:hidden.txt)" = "new hidden" ] &&
+     [ "$(git -C "$mixed_repository" show HEAD:visible.txt)" = "new visible" ] &&
+     printf '%s\n' "$output" | grep -Fq 'M  hidden.txt' &&
+     printf '%s\n' "$output" | grep -Fq 'M  visible.txt' &&
+     git -C "$mixed_repository" ls-files -v untouched.txt | grep -Eq '^h '; then
+    pass "one exact review includes visible and Git-index-hidden changes without clearing unrelated hints"
+  else
+    fail_test "one exact review includes visible and Git-index-hidden changes without clearing unrelated hints"
+  fi
+
+  mkdir -p "$net_zero_repository"
+  git -C "$net_zero_repository" init -q
+  git -C "$net_zero_repository" config user.name tester
+  git -C "$net_zero_repository" config user.email tester@example.com
+  printf 'original\n' > "$net_zero_repository/file.txt"
+  git -C "$net_zero_repository" add file.txt
+  git -C "$net_zero_repository" commit -qm baseline
+  printf 'staged version\n' > "$net_zero_repository/file.txt"
+  git -C "$net_zero_repository" add file.txt
+  printf 'original\n' > "$net_zero_repository/file.txt"
+  before_cached="$(git -C "$net_zero_repository" diff --cached)"
+  GIT_ROOT="$net_zero_repository"
+  prompt_count=0
+  status=0
+  output="$(prepare_and_commit 2>&1)" || status=$?
+  if [ "$status" -eq 2 ] && [ "$prompt_count" -eq 0 ] &&
+     [ "$(git -C "$net_zero_repository" diff --cached)" = "$before_cached" ] &&
+     printf '%s\n' "$output" | grep -Fq 'changes that cancel each other'; then
+    pass "staged and working-tree changes that cancel are left untouched"
+  else
+    fail_test "staged and working-tree changes that cancel are left untouched"
+  fi
+
+  mkdir -p "$sparse_repository/keep" "$sparse_repository/omit"
+  git -C "$sparse_repository" init -q
+  git -C "$sparse_repository" config user.name tester
+  git -C "$sparse_repository" config user.email tester@example.com
+  printf 'keep\n' > "$sparse_repository/keep/file.txt"
+  printf 'omit\n' > "$sparse_repository/omit/file.txt"
+  git -C "$sparse_repository" add -A
+  git -C "$sparse_repository" commit -qm baseline
+  git -C "$sparse_repository" sparse-checkout init --cone
+  git -C "$sparse_repository" sparse-checkout set keep
+  GIT_ROOT="$sparse_repository"
+  status=0
+  prepare_and_commit >/dev/null 2>&1 || status=$?
+  if [ "$status" -eq 0 ] && [ "$WORKFLOW_COMMIT_CREATED_THIS_RUN" = false ]; then
+    pass "a clean sparse checkout is recognized without treating omitted files as deleted"
+  else
+    fail_test "a clean sparse checkout is recognized without treating omitted files as deleted"
+  fi
+
+  mkdir -p "$nested_repository/child"
+  git -C "$nested_repository" init -q
+  git -C "$nested_repository" config user.name tester
+  git -C "$nested_repository" config user.email tester@example.com
+  printf 'parent\n' > "$nested_repository/README.md"
+  git -C "$nested_repository" add README.md
+  git -C "$nested_repository" commit -qm baseline
+  git -C "$nested_repository/child" init -q
+  git -C "$nested_repository/child" config user.name tester
+  git -C "$nested_repository/child" config user.email tester@example.com
+  printf 'child\n' > "$nested_repository/child/file.txt"
+  git -C "$nested_repository/child" add file.txt
+  git -C "$nested_repository/child" commit -qm child
+  GIT_ROOT="$nested_repository"
+  prompt_count=0
+  status=0
+  output="$(prepare_and_commit 2>&1)" || status=$?
+  if [ "$status" -eq 2 ] && [ "$prompt_count" -eq 0 ] &&
+     git -C "$nested_repository" diff --cached --quiet &&
+     printf '%s\n' "$output" | grep -Fq 'A separate Git repository is inside this project'; then
+    pass "an unregistered nested Git repository is blocked instead of being mislabeled as ordinary files"
+  else
+    fail_test "an unregistered nested Git repository is blocked instead of being mislabeled as ordinary files"
+  fi
+
+  mkdir -p "$submodule_source" "$submodule_parent"
+  git -C "$submodule_source" init -q
+  git -C "$submodule_source" config user.name tester
+  git -C "$submodule_source" config user.email tester@example.com
+  printf 'submodule\n' > "$submodule_source/file.txt"
+  git -C "$submodule_source" add file.txt
+  git -C "$submodule_source" commit -qm baseline
+  git -C "$submodule_parent" init -q
+  git -C "$submodule_parent" config user.name tester
+  git -C "$submodule_parent" config user.email tester@example.com
+  git -C "$submodule_parent" -c protocol.file.allow=always \
+    submodule add -q "$submodule_source" vendor/tool
+  git -C "$submodule_parent" commit -qam baseline
+  printf 'dirty\n' >> "$submodule_parent/vendor/tool/file.txt"
+  GIT_ROOT="$submodule_parent"
+  prompt_count=0
+  status=0
+  output="$(prepare_and_commit 2>&1)" || status=$?
+  if [ "$status" -eq 2 ] && [ "$prompt_count" -eq 0 ] &&
+     git -C "$submodule_parent" diff --cached --quiet &&
+     printf '%s\n' "$output" | grep -Fq 'Uncommitted changes inside a Git submodule'; then
+    pass "dirty submodule files are explained and blocked before the parent repository is staged"
+  else
+    fail_test "dirty submodule files are explained and blocked before the parent repository is staged"
+  fi
+
+  mkdir -p "$hook_repository/.git/hooks"
+  git -C "$hook_repository" init -q
+  git -C "$hook_repository" config user.name tester
+  git -C "$hook_repository" config user.email tester@example.com
+  printf 'base\n' > "$hook_repository/file.txt"
+  git -C "$hook_repository" add file.txt
+  git -C "$hook_repository" commit -qm baseline
+  printf '#!/bin/sh\nprintf "\\nchanged by hook\\n" >> "$1"\n' > "$hook_repository/.git/hooks/commit-msg"
+  chmod 700 "$hook_repository/.git/hooks/commit-msg"
+  printf 'change\n' >> "$hook_repository/file.txt"
+  GIT_ROOT="$hook_repository"
+  status=0
+  output="$(prepare_and_commit 2>&1)" || status=$?
+  if [ "$status" -ne 0 ] && [ "$WORKFLOW_COMMIT_CREATED_THIS_RUN" = false ] &&
+     printf '%s\n' "$output" | grep -Fq "confirmed files, message, or identity"; then
+    pass "the created commit is rechecked against the confirmed files, message, and identity before push"
+  else
+    fail_test "the created commit is rechecked against the confirmed files, message, and identity before push"
+  fi
+
+  if GIT_DIR="$mixed_repository/.git" GIT_WORK_TREE="$mixed_repository" \
+    GIT_AUTHOR_NAME=wrong GIT_COMMITTER_EMAIL=wrong@example.com \
+    GITHUB_AUTO_TESTING=1 bash -c '
+      source "$1"
+      test -z "${GIT_DIR+x}" && test -z "${GIT_WORK_TREE+x}" &&
+        test -z "${GIT_AUTHOR_NAME+x}" && test -z "${GIT_COMMITTER_EMAIL+x}"
+    ' bash "$PROJECT_DIRECTORY/git-auto.sh"; then
+    pass "the central engine discards inherited repository and commit-identity overrides"
+  else
+    fail_test "the central engine discards inherited repository and commit-identity overrides"
+  fi
+
+  eval "$saved_prompt_commit_message"
   GIT_ROOT="$original_root"
   PROJECT_BINDING_REUSED="$original_binding_reused"
 }
@@ -2666,6 +2847,7 @@ fi
 if [ "${1:-}" = "--commit-confirmation" ]; then
   printf 'TAP version 13\n'
   test_focused_commit_confirmation
+  test_focused_exact_snapshot_edges
   test_focused_transaction_safety
   test_focused_history_confirmation
   printf '1..%s\n' "$TEST_COUNT"

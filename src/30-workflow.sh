@@ -1019,8 +1019,38 @@ show_possible_embedded_projects() {
 }
 
 review_possible_embedded_projects() {
+  local index=0
+  local has_nested_repository=false
+
   scan_possible_embedded_projects || return 1
   [ "$POSSIBLE_EMBEDDED_PROJECT_COUNT" -gt 0 ] || return 0
+
+  while [ "$index" -lt "$POSSIBLE_EMBEDDED_PROJECT_COUNT" ]; do
+    if [ "${POSSIBLE_EMBEDDED_PROJECT_MARKERS[$index]}" = .git ]; then
+      has_nested_repository=true
+      break
+    fi
+    index=$((index + 1))
+  done
+  if [ "$has_nested_repository" = true ]; then
+    heading \
+      "A separate Git repository is inside this project" \
+      "当前项目中包含另一个 Git 仓库"
+    warn \
+      "Git cannot add the files inside the following folders as ordinary project files. It would record only a link to another repository, so this run has stopped before staging." \
+      "Git 无法把下列文件夹中的内容当作当前项目的普通文件加入提交，只会记录一个指向其他仓库的链接。为避免上传内容与预期不符，本次已在暂存前停止。"
+    index=0
+    while [ "$index" -lt "$POSSIBLE_EMBEDDED_PROJECT_COUNT" ]; do
+      if [ "${POSSIBLE_EMBEDDED_PROJECT_MARKERS[$index]}" = .git ]; then
+        printf '  - %s\n' "${POSSIBLE_EMBEDDED_PROJECT_DIRECTORIES[$index]}"
+      fi
+      index=$((index + 1))
+    done
+    muted \
+      "If these files belong to this project, remove or move that folder's own .git directory first. If it is intentionally a submodule, configure it with Git before running ./$SCRIPT_NAME again." \
+      "如果这些文件本来就属于当前项目，请先移走或删除该文件夹自己的 .git 目录；如果它本来就是子模块，请先用 Git 正确配置子模块，再重新运行 ./${SCRIPT_NAME}。"
+    return 2
+  fi
 
   heading \
     "New folders that may belong to another project" \
@@ -1045,15 +1075,25 @@ review_possible_embedded_projects() {
   return 2
 }
 
+list_dirty_submodules() {
+  [ -f "$GIT_ROOT/.gitmodules" ] || return 0
+  git -C "$GIT_ROOT" submodule foreach --quiet --recursive '
+    if test -n "$(git status --porcelain --untracked-files=all)"; then
+      printf "%s\n" "${displaypath:-$sm_path}"
+    fi
+  ' 2>/dev/null || true
+}
+
 prepare_and_commit() {
   local has_commits=true
   local rename_initial_branch=false
   local existing_local_branch=""
   local proposed="$DEFAULT_COMMIT_MESSAGE"
   local review_status=0
+  local initial_status_empty=false
+  local dirty_submodules=""
 
   WORKFLOW_COMMIT_CREATED_THIS_RUN=false
-  WORKFLOW_REVIEW_RECOVERED=false
 
   info \
     "Checking the working tree for changes to commit..." \
@@ -1071,8 +1111,7 @@ prepare_and_commit() {
 
   if ! capture_workflow_checkpoint ||
      ! capture_workflow_review_snapshot ||
-     ! prepare_expected_staged_tree ||
-     ! verify_reviewed_file_tree; then
+     ! prepare_expected_staged_tree; then
     clear_workflow_review_snapshot
     error_message \
       "The repository state could not be recorded for a safe commit review." \
@@ -1080,57 +1119,73 @@ prepare_and_commit() {
     return 1
   fi
 
-  if [ ! -s "$WORKFLOW_REVIEW_SNAPSHOT" ]; then
-    if expected_staged_tree_has_changes; then
-      if ! recover_workflow_review_snapshot || ! verify_reviewed_file_tree; then
-        clear_workflow_review_snapshot
-        error_message \
-          "The complete Git file scan found changes, but an accurate review list could not be prepared. Nothing was staged, committed, or pushed." \
-          "完整 Git 文件扫描发现了改动，但无法生成准确的检查清单。本次没有暂存、提交或上传任何文件。"
-        return 1
-      fi
-      warn \
-        "The initial Git status did not list these changes. A complete independent file scan recovered the accurate commit contents shown below." \
-        "首次 Git 状态检查没有列出这些改动。程序已通过独立的完整文件扫描恢复准确内容，并在下方列出。"
-    else
-      clear_workflow_review_snapshot
-      if [ "$has_commits" = false ]; then
-        warn \
-          "This repository has no commit and no project files available to commit. Nothing was pushed." \
-          "当前仓库还没有提交记录，也没有可提交的项目文件，因此本次不会上传。"
-        return 3
-      fi
-      info \
-        "The working tree has no uncommitted changes. No commit will be created; any existing local commits will still be considered for push." \
-        "工作区没有尚未提交的改动，因此不会创建新提交；如果本地已有尚未上传的提交，后续仍会尝试推送。"
-      return 0
-    fi
+  [ -s "$WORKFLOW_REVIEW_SNAPSHOT" ] || initial_status_empty=true
+  dirty_submodules="$(list_dirty_submodules)"
+  if [ -n "$dirty_submodules" ]; then
+    clear_workflow_review_snapshot
+    heading "Uncommitted changes inside a Git submodule" "Git 子模块中还有未提交的改动"
+    warn \
+      "The parent repository cannot include file changes made inside these submodules:" \
+      "当前主仓库无法直接提交下列子模块内部的文件改动："
+    printf '%s\n' "$dirty_submodules" | sed 's/^/  - /'
+    muted \
+      "Commit those files inside each submodule first, then run ./$SCRIPT_NAME again. Nothing was staged, committed, or pushed by this run." \
+      "请先分别进入这些子模块完成提交，再重新运行 ./${SCRIPT_NAME}。本次没有暂存、提交或上传任何内容。"
+    return 2
   fi
 
-  if { [ "$WORKFLOW_REVIEW_RECOVERED" != true ] &&
-       ! verify_workflow_review_snapshot; } ||
-     ! verify_reviewed_file_tree; then
+  if ! verify_reviewed_file_tree; then
+    clear_workflow_review_snapshot
+    error_message \
+      "The repository state could not be recorded for a safe commit review." \
+      "无法记录当前仓库状态，因此不能安全地进行提交检查。"
+    return 1
+  fi
+
+  if ! expected_staged_tree_has_changes; then
+    clear_workflow_review_snapshot
+    if [ "$initial_status_empty" != true ]; then
+      warn \
+        "The staging area and working tree contain changes that cancel each other. git add -A would produce no new commit, so this run stopped without changing the staging area or pushing." \
+        "暂存区和工作区中的改动相互抵消；即使执行 git add -A，也不会产生新的提交。脚本已保持现有暂存状态并停止，本次不会上传。"
+      muted \
+        "Review git status, keep the version you want, then run ./$SCRIPT_NAME again." \
+        "请用 git status 核对现状，保留你真正需要的版本后，再重新运行 ./${SCRIPT_NAME}。"
+      return 2
+    fi
+    if [ "$has_commits" = false ]; then
+      warn \
+        "This repository has no commit and no project files available to commit. Nothing was pushed." \
+        "当前仓库还没有提交记录，也没有可提交的项目文件，因此本次不会上传。"
+      return 3
+    fi
+    info \
+      "The working tree has no uncommitted changes. No commit will be created; any existing local commits will still be considered for push." \
+      "工作区没有尚未提交的改动，因此不会创建新提交；如果本地已有尚未上传的提交，后续仍会考虑上传。"
+    return 0
+  fi
+
+  if ! write_exact_workflow_review_snapshot || ! verify_reviewed_file_tree; then
     clear_workflow_review_snapshot
     error_message \
       "The exact file snapshot for review could not be prepared safely. The real Git staging area was not changed." \
       "无法安全生成本次检查所需的准确文件快照。真实 Git 暂存区没有发生变化。"
     return 1
   fi
+  if [ "$initial_status_empty" = true ]; then
+    warn \
+      "The initial Git status did not list these changes. A complete independent file scan recovered the accurate commit contents shown below." \
+      "首次 Git 状态检查没有列出这些改动。程序已通过独立的完整文件扫描恢复准确内容，并在下方列出。"
+  fi
 
   heading "Review changes before committing" "提交前检查改动"
   muted \
-    "The following output is from git status --short. A means added, M modified, D deleted, and ?? an untracked file." \
-    "下面是 git status --short 的结果：A 表示新增，M 表示修改，D 表示删除，?? 表示尚未跟踪的新文件。"
+    "This is the exact file snapshot git add -A will prepare. A means added, M modified, D deleted, R renamed, and T a file-type change." \
+    "下面是执行 git add -A 后将要提交的准确文件清单：A 表示新增，M 表示修改，D 表示删除，R 表示重命名，T 表示文件类型发生变化。"
   sed -n '1,$p' "$WORKFLOW_REVIEW_SNAPSHOT"
-  if [ "$WORKFLOW_REVIEW_RECOVERED" = true ]; then
-    muted \
-      "After the commit message is confirmed, the complete verified snapshot shown above, including deletions, will be staged and committed." \
-      "确认提交说明后，程序会暂存并提交上方经过完整核对的文件快照，其中也包括删除的文件。"
-  else
-    muted \
-      "After the commit message is confirmed, git add -A will include every change shown above, including deletions." \
-      "确认提交说明后，脚本会执行 git add -A，把上面显示的全部改动一并纳入提交，其中也包括删除的文件。"
-  fi
+  muted \
+    "After the commit message is confirmed, git add -A will include every change shown above, including deletions." \
+    "确认提交说明后，脚本会执行 git add -A，把上面显示的全部改动一并纳入提交，其中也包括删除的文件。"
 
   review_status=0
   review_possible_embedded_projects || review_status=$?
@@ -1195,11 +1250,6 @@ prepare_and_commit() {
     clear_workflow_review_snapshot
     return 1
   fi
-  if [ "$WORKFLOW_REVIEW_RECOVERED" != true ] &&
-     ! verify_workflow_review_snapshot; then
-    clear_workflow_review_snapshot
-    return 1
-  fi
   if ! verify_reviewed_file_tree; then
     clear_workflow_review_snapshot
     return 1
@@ -1212,28 +1262,15 @@ prepare_and_commit() {
     return 1
   fi
 
-  if [ "$WORKFLOW_REVIEW_RECOVERED" = true ]; then
-    info \
-      "Staging the complete file snapshot confirmed above..." \
-      "正在暂存上方已经确认的完整文件快照……"
-    if ! git -C "$GIT_ROOT" read-tree "$WORKFLOW_EXPECTED_STAGED_TREE"; then
-      clear_workflow_review_snapshot
-      error_message \
-        "The verified file snapshot could not be staged. No commit or push was attempted." \
-        "无法暂存经过完整核对的文件快照。本次没有继续创建提交或上传。"
-      return 1
-    fi
-  else
-    info \
-      "Staging all confirmed changes with git add -A..." \
-      "正在执行 git add -A，暂存刚才确认的全部改动……"
-    if ! git -C "$GIT_ROOT" add -A; then
-      clear_workflow_review_snapshot
-      error_message \
-        "git add -A failed. Git may have staged some paths before stopping; inspect git status. No commit or push was attempted." \
-        "git add -A 执行失败。Git 可能已经暂存了部分文件，请用 git status 检查；脚本没有继续提交或上传。"
-      return 1
-    fi
+  info \
+    "Staging all confirmed changes with git add -A..." \
+    "正在执行 git add -A，暂存刚才确认的全部改动……"
+  if ! prepare_real_index_for_exact_staging || ! git -C "$GIT_ROOT" add -A; then
+    clear_workflow_review_snapshot
+    error_message \
+      "git add -A failed. Git may have staged some paths before stopping; inspect git status. No commit or push was attempted." \
+      "git add -A 执行失败。Git 可能已经暂存了部分文件，请用 git status 检查；脚本没有继续提交或上传。"
+    return 1
   fi
   clear_workflow_review_snapshot
   if ! verify_staging_finished_cleanly; then
@@ -1262,17 +1299,26 @@ prepare_and_commit() {
   info \
     "Creating commit: $COMMIT_MESSAGE. Any Git hooks or commit-signing prompt configured for this repository runs during this step." \
     "正在创建提交：${COMMIT_MESSAGE}。如果当前仓库配置了 Git hook 或提交签名，它们会在这一步运行并可能显示自己的提示。"
-  if ! git -C "$GIT_ROOT" commit -m "$COMMIT_MESSAGE"; then
+  if ! GIT_AUTHOR_NAME="$WORKFLOW_EXPECTED_AUTHOR_NAME" \
+    GIT_AUTHOR_EMAIL="$WORKFLOW_EXPECTED_EMAIL" \
+    GIT_COMMITTER_NAME="$WORKFLOW_EXPECTED_AUTHOR_NAME" \
+    GIT_COMMITTER_EMAIL="$WORKFLOW_EXPECTED_EMAIL" \
+    git -C "$GIT_ROOT" \
+    -c "user.name=$WORKFLOW_EXPECTED_AUTHOR_NAME" \
+    -c "user.email=$WORKFLOW_EXPECTED_EMAIL" \
+    commit -m "$COMMIT_MESSAGE"; then
     error_message \
       "The commit failed. The selected changes remain staged for inspection, and no push was attempted." \
       "提交失败。本次选择的改动仍保留在暂存区，便于检查；脚本没有执行上传。"
     return 1
   fi
-  success "Committed: $COMMIT_MESSAGE" "已提交：$COMMIT_MESSAGE"
 
-  if ! accept_created_commit_checkpoint "finishing the commit" "完成提交"; then
+  if ! accept_created_commit_checkpoint \
+    "finishing the commit" "完成提交" \
+    "$COMMIT_MESSAGE" "$WORKFLOW_EXPECTED_AUTHOR_NAME" "$WORKFLOW_EXPECTED_EMAIL"; then
     return 1
   fi
+  success "Committed: $COMMIT_MESSAGE" "已提交：$COMMIT_MESSAGE"
 
   if [ "$rename_initial_branch" = true ]; then
     git -C "$GIT_ROOT" branch -M main || fail \

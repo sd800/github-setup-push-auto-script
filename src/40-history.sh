@@ -1245,6 +1245,8 @@ history_build_repository() {
   local commit_date=""
   local work_directory=""
   local short_commit=""
+  local expected_tree=""
+  local commit_message=""
   local GIT_ROOT=""
 
   if [ "$HISTORY_COMMITS_CONFIRMED" != true ]; then
@@ -1291,13 +1293,28 @@ history_build_repository() {
     fi
 
     git -C "$work_directory" add -A -f || return 1
+    expected_tree="$(git -C "$work_directory" write-tree 2>/dev/null)" || return 1
+    commit_message="Release $version"
     commit_date="$(history_commit_date_for_release "$release_date")"
     if [ -n "$commit_date" ]; then
-      if ! GIT_AUTHOR_DATE="$commit_date" GIT_COMMITTER_DATE="$commit_date" \
-        git -C "$work_directory" commit --allow-empty -q -m "Release $version"; then
+      if ! GIT_AUTHOR_NAME="$BOUND_USERNAME" GIT_AUTHOR_EMAIL="$BOUND_EMAIL" \
+        GIT_COMMITTER_NAME="$BOUND_USERNAME" GIT_COMMITTER_EMAIL="$BOUND_EMAIL" \
+        GIT_AUTHOR_DATE="$commit_date" GIT_COMMITTER_DATE="$commit_date" \
+        git -C "$work_directory" commit --allow-empty -q -m "$commit_message"; then
         return 1
       fi
-    elif ! git -C "$work_directory" commit --allow-empty -q -m "Release $version"; then
+    elif ! GIT_AUTHOR_NAME="$BOUND_USERNAME" GIT_AUTHOR_EMAIL="$BOUND_EMAIL" \
+      GIT_COMMITTER_NAME="$BOUND_USERNAME" GIT_COMMITTER_EMAIL="$BOUND_EMAIL" \
+      git -C "$work_directory" commit --allow-empty -q -m "$commit_message"; then
+      return 1
+    fi
+    if [ "$(git -C "$work_directory" show -s --format='%T' HEAD 2>/dev/null || true)" != "$expected_tree" ] ||
+       [ "$(git -C "$work_directory" show -s --format='%B' HEAD 2>/dev/null || true)" != "$commit_message" ] ||
+       [ "$(git -C "$work_directory" show -s --format='%an <%ae>' HEAD 2>/dev/null || true)" != "$BOUND_USERNAME <$BOUND_EMAIL>" ] ||
+       [ "$(git -C "$work_directory" show -s --format='%cn <%ce>' HEAD 2>/dev/null || true)" != "$BOUND_USERNAME <$BOUND_EMAIL>" ]; then
+      advanced_error \
+        "The release commit did not exactly match its confirmed files, message, or account identity. History construction stopped before upload." \
+        "刚刚生成的版本提交与确认过的文件、提交说明或账号身份不完全一致。历史重建已停止，不会继续上传。"
       return 1
     fi
 

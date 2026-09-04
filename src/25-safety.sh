@@ -12,7 +12,7 @@ WORKFLOW_EXPECTED_STAGED_TREE=""
 WORKFLOW_EXPECTED_INDEX_FILE=""
 WORKFLOW_EXPECTED_ORIGINAL_INDEX_TREE=""
 WORKFLOW_EXPECTED_HEAD_TREE=""
-WORKFLOW_REVIEW_RECOVERED=false
+WORKFLOW_SPARSE_CHECKOUT=false
 WORKFLOW_PUSH_REFERENCE=""
 WORKFLOW_TRANSACTION_ACTIVE=false
 WORKFLOW_CHECKPOINT_ACTIVE=false
@@ -340,6 +340,9 @@ verify_workflow_checkpoint() {
 accept_created_commit_checkpoint() {
   local stage_en="$1"
   local stage_zh="$2"
+  local expected_message="$3"
+  local expected_name="$4"
+  local expected_email="$5"
   local previous_head="$WORKFLOW_EXPECTED_HEAD"
   local new_head=""
   local commit_line=""
@@ -363,6 +366,18 @@ accept_created_commit_checkpoint() {
     fi
   elif [ "${#commit_parts[@]}" -ne 2 ] || [ "${commit_parts[1]}" != "$previous_head" ]; then
     workflow_checkpoint_change "the new commit's parent history" "新提交的父提交关系" "$stage_en" "$stage_zh"
+    return 1
+  fi
+  if [ "$(git -C "$GIT_ROOT" show -s --format='%T' "$new_head" 2>/dev/null || true)" != "$WORKFLOW_EXPECTED_STAGED_TREE" ] ||
+     [ "$(git -C "$GIT_ROOT" show -s --format='%B' "$new_head" 2>/dev/null || true)" != "$expected_message" ] ||
+     [ "$(git -C "$GIT_ROOT" show -s --format='%an' "$new_head" 2>/dev/null || true)" != "$expected_name" ] ||
+     [ "$(git -C "$GIT_ROOT" show -s --format='%ae' "$new_head" 2>/dev/null || true)" != "$expected_email" ] ||
+     [ "$(git -C "$GIT_ROOT" show -s --format='%cn' "$new_head" 2>/dev/null || true)" != "$expected_name" ] ||
+     [ "$(git -C "$GIT_ROOT" show -s --format='%ce' "$new_head" 2>/dev/null || true)" != "$expected_email" ]; then
+    workflow_checkpoint_change \
+      "the new commit's confirmed files, message, or identity" \
+      "新提交中已经确认的文件、提交说明或账号身份" \
+      "$stage_en" "$stage_zh"
     return 1
   fi
 
@@ -397,6 +412,7 @@ prepare_expected_staged_tree() {
   WORKFLOW_EXPECTED_STAGED_TREE=""
   WORKFLOW_EXPECTED_ORIGINAL_INDEX_TREE=""
   WORKFLOW_EXPECTED_HEAD_TREE=""
+  WORKFLOW_SPARSE_CHECKOUT=false
   [ -z "$WORKFLOW_EXPECTED_INDEX_FILE" ] || rm -f "$WORKFLOW_EXPECTED_INDEX_FILE"
   WORKFLOW_EXPECTED_INDEX_FILE=""
   real_index="$(git -C "$GIT_ROOT" rev-parse --git-path index 2>/dev/null)" || return 1
@@ -419,7 +435,17 @@ prepare_expected_staged_tree() {
   git -C "$GIT_ROOT" rev-parse --verify HEAD >/dev/null 2>&1 || has_head=false
   rm -f "$temporary_index"
   if [ "$has_head" = true ]; then
-    if ! GIT_INDEX_FILE="$temporary_index" git -C "$GIT_ROOT" read-tree HEAD; then
+    WORKFLOW_EXPECTED_HEAD_TREE="$(
+      git -C "$GIT_ROOT" rev-parse 'HEAD^{tree}' 2>/dev/null
+    )" || true
+    if [ "$(git -C "$GIT_ROOT" config --bool core.sparseCheckout 2>/dev/null || true)" = true ]; then
+      WORKFLOW_SPARSE_CHECKOUT=true
+      if ! cp "$real_index" "$temporary_index" ||
+         ! GIT_INDEX_FILE="$temporary_index" git -C "$GIT_ROOT" reset -q HEAD --; then
+        rm -f "$temporary_index"
+        return 1
+      fi
+    elif ! GIT_INDEX_FILE="$temporary_index" git -C "$GIT_ROOT" read-tree HEAD; then
       rm -f "$temporary_index"
       return 1
     fi
@@ -428,10 +454,23 @@ prepare_expected_staged_tree() {
       rm -f "$temporary_index"
       return 1
     fi
+    WORKFLOW_EXPECTED_HEAD_TREE="$(
+      GIT_INDEX_FILE="$temporary_index" git -C "$GIT_ROOT" write-tree 2>/dev/null
+    )" || true
   fi
-  WORKFLOW_EXPECTED_HEAD_TREE="$(
-    GIT_INDEX_FILE="$temporary_index" git -C "$GIT_ROOT" write-tree 2>/dev/null
-  )" || true
+  if [ "$WORKFLOW_SPARSE_CHECKOUT" = true ]; then
+    if ! GIT_INDEX_FILE="$temporary_index" git -C "$GIT_ROOT" ls-files -z |
+       GIT_INDEX_FILE="$temporary_index" git -C "$GIT_ROOT" \
+         update-index --no-assume-unchanged -z --stdin; then
+      rm -f "$temporary_index"
+      return 1
+    fi
+  elif ! GIT_INDEX_FILE="$temporary_index" git -C "$GIT_ROOT" ls-files -z |
+       GIT_INDEX_FILE="$temporary_index" git -C "$GIT_ROOT" \
+         update-index --no-assume-unchanged --no-skip-worktree -z --stdin; then
+    rm -f "$temporary_index"
+    return 1
+  fi
   if [ -z "$WORKFLOW_EXPECTED_HEAD_TREE" ] ||
      ! GIT_INDEX_FILE="$temporary_index" git -C "$GIT_ROOT" add -A ||
      ! WORKFLOW_EXPECTED_STAGED_TREE="$(
@@ -454,7 +493,7 @@ expected_staged_tree_has_changes() {
     [ "$WORKFLOW_EXPECTED_STAGED_TREE" != "$WORKFLOW_EXPECTED_HEAD_TREE" ]
 }
 
-recover_workflow_review_snapshot() {
+write_exact_workflow_review_snapshot() {
   [ -f "$WORKFLOW_EXPECTED_INDEX_FILE" ] || return 1
   if ! GIT_INDEX_FILE="$WORKFLOW_EXPECTED_INDEX_FILE" \
     git -C "$GIT_ROOT" --no-pager status \
@@ -462,7 +501,32 @@ recover_workflow_review_snapshot() {
     return 1
   fi
   [ -s "$WORKFLOW_REVIEW_SNAPSHOT" ] || return 1
-  WORKFLOW_REVIEW_RECOVERED=true
+}
+
+prepare_real_index_for_exact_staging() {
+  local changed_paths=""
+  local path=""
+
+  changed_paths="$(safe_mktemp_file "${TMPDIR:-/tmp}" "github-auto-paths")" || return 1
+  if ! git -C "$GIT_ROOT" diff-tree -r --no-commit-id --name-only -z \
+    "$WORKFLOW_EXPECTED_HEAD_TREE" "$WORKFLOW_EXPECTED_STAGED_TREE" > "$changed_paths"; then
+    rm -f "$changed_paths"
+    return 1
+  fi
+  while IFS= read -r -d '' path; do
+    if git -C "$GIT_ROOT" ls-files --error-unmatch -- "$path" >/dev/null 2>&1; then
+      if ! git -C "$GIT_ROOT" update-index --no-assume-unchanged -- "$path"; then
+        rm -f "$changed_paths"
+        return 1
+      fi
+      if [ "$WORKFLOW_SPARSE_CHECKOUT" != true ] &&
+         ! git -C "$GIT_ROOT" update-index --no-skip-worktree -- "$path"; then
+        rm -f "$changed_paths"
+        return 1
+      fi
+    fi
+  done < "$changed_paths"
+  rm -f "$changed_paths"
 }
 
 verify_reviewed_file_tree() {
@@ -486,31 +550,6 @@ verify_reviewed_file_tree() {
     "The current git status is shown below. Review the latest files, then run ./$SCRIPT_NAME again." \
     "下面显示的是当前最新 git status。请重新核对文件后，再运行 ./${SCRIPT_NAME}。"
   git -C "$GIT_ROOT" --no-pager status --short --untracked-files=all
-  return 1
-}
-
-verify_workflow_review_snapshot() {
-  local current_snapshot=""
-
-  current_snapshot="$(safe_mktemp_file "${TMPDIR:-/tmp}" "github-auto-current")" || return 1
-  if ! git -C "$GIT_ROOT" --no-pager status \
-    --porcelain=v1 --untracked-files=all > "$current_snapshot"; then
-    rm -f "$current_snapshot"
-    return 1
-  fi
-  if cmp -s "$WORKFLOW_REVIEW_SNAPSHOT" "$current_snapshot"; then
-    rm -f "$current_snapshot"
-    return 0
-  fi
-
-  error_message \
-    "The working-tree or staging-area contents changed after the review. Stopped before git add -A so nothing new was staged, committed, or pushed." \
-    "检查清单显示后，工作区或暂存区内容又发生了变化。脚本已在执行 git add -A 前停止，没有新增暂存内容，也没有继续提交或上传。"
-  muted \
-    "The current git status is shown below. Review this updated list, then run ./$SCRIPT_NAME again." \
-    "下面显示的是当前最新 git status。请重新核对这份清单，再运行 ./${SCRIPT_NAME}。"
-  sed -n '1,$p' "$current_snapshot"
-  rm -f "$current_snapshot"
   return 1
 }
 

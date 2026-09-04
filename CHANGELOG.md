@@ -6,6 +6,25 @@
 
 All notable changes to Auto Script for GitHub Setup and Push are documented in this file.
 
+## 3.13.1 - 2026-09-04
+
+### Changed
+
+- Simplified ordinary commits to one authoritative flow: build the exact prospective file tree, show that same tree for confirmation, run `git add -A`, and verify the resulting commit before push. Visible changes and changes hidden by Git index hints can no longer follow different staging paths.
+- The review now describes the exact commit snapshot rather than presenting a potentially incomplete quick-status result. Only index hints on files that actually need to be committed are cleared; unrelated hints remain unchanged.
+- Froze `g.sh` as the stable seed launcher. Existing project copies continue to delegate to the central engine and do not need replacement when features, text, or safety logic change; future implementation updates belong in `git-auto.sh` and `src/`.
+
+### Fixed
+
+- Prevented simultaneous visible and `assume-unchanged` changes from producing a partial review or a failed partial staging operation.
+- Added correct handling for sparse checkouts, staged and working-tree changes that cancel each other, dirty submodules, and unregistered nested Git repositories. Each case now stops or continues with an accurate explanation and without silently committing different contents.
+- The central engine now discards inherited Git environment overrides that could redirect Git operations to another repository, index, object store, or commit identity.
+- Rechecked every newly created ordinary and reconstructed-history commit against its confirmed tree, message, author, and committer before allowing upload.
+
+### Tests
+
+- Added focused coverage for mixed visible and hidden changes, preservation of unrelated index hints, net-zero staging states, clean sparse checkouts, dirty submodules, nested repositories, inherited Git overrides, and commit hooks that alter a confirmed message.
+
 ## 3.12.1 - 2026-09-04
 
 ### Fixed
