@@ -1040,8 +1040,8 @@ review_possible_embedded_projects() {
   fi
 
   warn \
-    "Commit stopped before git add -A. Existing staged changes were left unchanged; no commit or push was performed." \
-    "已在执行 git add -A 前停止；原有暂存内容保持不变，也没有创建提交或上传文件。"
+    "Commit stopped before the staging area was changed. Existing staged changes were left unchanged; no commit or push was performed." \
+    "已在改动暂存区前停止；原有暂存内容保持不变，也没有创建提交或上传文件。"
   return 2
 }
 
@@ -1053,6 +1053,7 @@ prepare_and_commit() {
   local review_status=0
 
   WORKFLOW_COMMIT_CREATED_THIS_RUN=false
+  WORKFLOW_REVIEW_RECOVERED=false
 
   info \
     "Checking the working tree for changes to commit..." \
@@ -1068,7 +1069,10 @@ prepare_and_commit() {
     fi
   fi
 
-  if ! capture_workflow_checkpoint || ! capture_workflow_review_snapshot; then
+  if ! capture_workflow_checkpoint ||
+     ! capture_workflow_review_snapshot ||
+     ! prepare_expected_staged_tree ||
+     ! verify_reviewed_file_tree; then
     clear_workflow_review_snapshot
     error_message \
       "The repository state could not be recorded for a safe commit review." \
@@ -1077,20 +1081,35 @@ prepare_and_commit() {
   fi
 
   if [ ! -s "$WORKFLOW_REVIEW_SNAPSHOT" ]; then
-    clear_workflow_review_snapshot
-    if [ "$has_commits" = false ]; then
+    if expected_staged_tree_has_changes; then
+      if ! recover_workflow_review_snapshot || ! verify_reviewed_file_tree; then
+        clear_workflow_review_snapshot
+        error_message \
+          "The complete Git file scan found changes, but an accurate review list could not be prepared. Nothing was staged, committed, or pushed." \
+          "完整 Git 文件扫描发现了改动，但无法生成准确的检查清单。本次没有暂存、提交或上传任何文件。"
+        return 1
+      fi
       warn \
-        "This repository has no commit and no project files available to commit. Nothing was pushed." \
-        "当前仓库还没有提交记录，也没有可提交的项目文件，因此本次不会上传。"
-      return 3
+        "The initial Git status did not list these changes. A complete independent file scan recovered the accurate commit contents shown below." \
+        "首次 Git 状态检查没有列出这些改动。程序已通过独立的完整文件扫描恢复准确内容，并在下方列出。"
+    else
+      clear_workflow_review_snapshot
+      if [ "$has_commits" = false ]; then
+        warn \
+          "This repository has no commit and no project files available to commit. Nothing was pushed." \
+          "当前仓库还没有提交记录，也没有可提交的项目文件，因此本次不会上传。"
+        return 3
+      fi
+      info \
+        "The working tree has no uncommitted changes. No commit will be created; any existing local commits will still be considered for push." \
+        "工作区没有尚未提交的改动，因此不会创建新提交；如果本地已有尚未上传的提交，后续仍会尝试推送。"
+      return 0
     fi
-    info \
-      "The working tree has no uncommitted changes. No commit will be created; any existing local commits will still be considered for push." \
-      "工作区没有尚未提交的改动，因此不会创建新提交；如果本地已有尚未上传的提交，后续仍会尝试推送。"
-    return 0
   fi
 
-  if ! prepare_expected_staged_tree || ! verify_workflow_review_snapshot; then
+  if { [ "$WORKFLOW_REVIEW_RECOVERED" != true ] &&
+       ! verify_workflow_review_snapshot; } ||
+     ! verify_reviewed_file_tree; then
     clear_workflow_review_snapshot
     error_message \
       "The exact file snapshot for review could not be prepared safely. The real Git staging area was not changed." \
@@ -1103,9 +1122,15 @@ prepare_and_commit() {
     "The following output is from git status --short. A means added, M modified, D deleted, and ?? an untracked file." \
     "下面是 git status --short 的结果：A 表示新增，M 表示修改，D 表示删除，?? 表示尚未跟踪的新文件。"
   sed -n '1,$p' "$WORKFLOW_REVIEW_SNAPSHOT"
-  muted \
-    "After the commit message is confirmed, git add -A will include every change shown above, including deletions." \
-    "确认提交说明后，脚本会执行 git add -A，把上面显示的全部改动一并纳入提交，其中也包括删除的文件。"
+  if [ "$WORKFLOW_REVIEW_RECOVERED" = true ]; then
+    muted \
+      "After the commit message is confirmed, the complete verified snapshot shown above, including deletions, will be staged and committed." \
+      "确认提交说明后，程序会暂存并提交上方经过完整核对的文件快照，其中也包括删除的文件。"
+  else
+    muted \
+      "After the commit message is confirmed, git add -A will include every change shown above, including deletions." \
+      "确认提交说明后，脚本会执行 git add -A，把上面显示的全部改动一并纳入提交，其中也包括删除的文件。"
+  fi
 
   review_status=0
   review_possible_embedded_projects || review_status=$?
@@ -1156,8 +1181,8 @@ prepare_and_commit() {
     2)
       clear_workflow_review_snapshot
       warn \
-        "Commit canceled before git add -A. This step did not stage, commit, or push any files." \
-        "已在执行 git add -A 前取消；这一步没有暂存、提交或上传任何文件。"
+        "Commit canceled before the staging area was changed. This step did not stage, commit, or push any files." \
+        "已在改动暂存区前取消；这一步没有暂存、提交或上传任何文件。"
       return 2
       ;;
     *)
@@ -1166,27 +1191,52 @@ prepare_and_commit() {
       ;;
   esac
 
-  if ! verify_workflow_checkpoint "staging" "执行暂存" ||
-     ! verify_workflow_review_snapshot ||
-     ! verify_reviewed_file_tree; then
+  if ! verify_workflow_checkpoint "staging" "执行暂存"; then
     clear_workflow_review_snapshot
     return 1
   fi
-  clear_workflow_review_snapshot
+  if [ "$WORKFLOW_REVIEW_RECOVERED" != true ] &&
+     ! verify_workflow_review_snapshot; then
+    clear_workflow_review_snapshot
+    return 1
+  fi
+  if ! verify_reviewed_file_tree; then
+    clear_workflow_review_snapshot
+    return 1
+  fi
   if ! set_workflow_state staging; then
+    clear_workflow_review_snapshot
     error_message \
-      "The commit safety record could not be written. Stopped before git add -A." \
-      "无法写入本次提交的安全记录。脚本已在执行 git add -A 前停止。"
+      "The commit safety record could not be written. Stopped before changing the staging area." \
+      "无法写入本次提交的安全记录。脚本已在改动暂存区前停止。"
     return 1
   fi
 
-  info \
-    "Staging all confirmed changes with git add -A..." \
-    "正在执行 git add -A，暂存刚才确认的全部改动……"
-  if ! git -C "$GIT_ROOT" add -A; then
-    error_message \
-      "git add -A failed. Git may have staged some paths before stopping; inspect git status. No commit or push was attempted." \
-      "git add -A 执行失败。Git 可能已经暂存了部分文件，请用 git status 检查；脚本没有继续提交或上传。"
+  if [ "$WORKFLOW_REVIEW_RECOVERED" = true ]; then
+    info \
+      "Staging the complete file snapshot confirmed above..." \
+      "正在暂存上方已经确认的完整文件快照……"
+    if ! git -C "$GIT_ROOT" read-tree "$WORKFLOW_EXPECTED_STAGED_TREE"; then
+      clear_workflow_review_snapshot
+      error_message \
+        "The verified file snapshot could not be staged. No commit or push was attempted." \
+        "无法暂存经过完整核对的文件快照。本次没有继续创建提交或上传。"
+      return 1
+    fi
+  else
+    info \
+      "Staging all confirmed changes with git add -A..." \
+      "正在执行 git add -A，暂存刚才确认的全部改动……"
+    if ! git -C "$GIT_ROOT" add -A; then
+      clear_workflow_review_snapshot
+      error_message \
+        "git add -A failed. Git may have staged some paths before stopping; inspect git status. No commit or push was attempted." \
+        "git add -A 执行失败。Git 可能已经暂存了部分文件，请用 git status 检查；脚本没有继续提交或上传。"
+      return 1
+    fi
+  fi
+  clear_workflow_review_snapshot
+  if ! verify_staging_finished_cleanly; then
     return 1
   fi
   set_workflow_state staged || {

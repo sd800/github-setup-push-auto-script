@@ -1225,7 +1225,7 @@ test_commit_cancellation_boundary() {
   assert_equal "$before_cached" "$after_cached" "commit cancellation preserves pre-existing staged changes"
   assert_equal "$before_head" "$(git -C "$repository" rev-parse HEAD)" "commit cancellation creates no commit"
   if ! git -C "$repository" diff --quiet -- unstaged.txt &&
-     printf '%s\n' "$output" | grep -Fq 'Commit canceled before git add -A.'; then
+     printf '%s\n' "$output" | grep -Fq 'Commit canceled before the staging area was changed.'; then
     pass "commit cancellation occurs before staging all working-tree changes"
   else
     fail_test "commit cancellation occurs before staging all working-tree changes"
@@ -1695,7 +1695,7 @@ test_project_release_policy() {
 
   english_version="$(sed -nE 's/^## ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' "$PROJECT_DIRECTORY/CHANGELOG.md" | sed -n '1p')"
   chinese_version="$(sed -nE 's/^## ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' "$PROJECT_DIRECTORY/CHANGELOG_zh.md" | sed -n '1p')"
-  assert_equal "3.11.5" "$english_version" "English changelog declares release 3.11.5"
+  assert_equal "3.12.1" "$english_version" "English changelog declares release 3.12.1"
   assert_equal "$english_version" "$chinese_version" "English and Chinese changelogs declare the same release"
   if [[ "$english_version" != *4* ]] &&
      [[ "$english_version" =~ ^[1-9][0-9]*\.[1-9][0-9]*\.[1-9][0-9]*$ ]]; then
@@ -1707,6 +1707,7 @@ test_project_release_policy() {
 
 test_focused_commit_confirmation() {
   local repository="$TEST_TEMPORARY/focused-commit-confirmation"
+  local hidden_repository="$TEST_TEMPORARY/focused-hidden-change"
   local embedded_repository="$TEST_TEMPORARY/focused-embedded-project"
   local pager="$TEST_TEMPORARY/forbidden-git-pager"
   local pager_marker="$TEST_TEMPORARY/git-pager-was-opened"
@@ -1765,6 +1766,46 @@ test_focused_commit_confirmation() {
   else
     fail_test "a clean working tree is recorded as having no commit confirmed during this run"
   fi
+
+  mkdir -p "$hidden_repository"
+  git -C "$hidden_repository" init -q
+  git -C "$hidden_repository" config user.name tester
+  git -C "$hidden_repository" config user.email tester@example.com
+  printf 'before\n' > "$hidden_repository/file.txt"
+  git -C "$hidden_repository" add file.txt
+  git -C "$hidden_repository" commit -qm baseline
+  git -C "$hidden_repository" update-index --assume-unchanged file.txt
+  printf 'after\n' > "$hidden_repository/file.txt"
+  GIT_ROOT="$hidden_repository"
+  before_head="$(git -C "$hidden_repository" rev-parse HEAD)"
+  prompt_commit_message() {
+    return 2
+  }
+  status=0
+  prepare_and_commit >/dev/null 2>&1 || status=$?
+  if [ "$status" -eq 2 ] &&
+     [ "$(git -C "$hidden_repository" rev-parse HEAD)" = "$before_head" ] &&
+     git -C "$hidden_repository" ls-files -v file.txt | grep -Eq '^[a-z] '; then
+    pass "canceling a recovered review preserves the real index and hidden local change"
+  else
+    fail_test "canceling a recovered review preserves the real index and hidden local change"
+  fi
+  prompt_commit_message() {
+    COMMIT_MESSAGE="Recovered change"
+    return 0
+  }
+  status=0
+  output="$(prepare_and_commit 2>&1)" || status=$?
+  if [ "$status" -eq 0 ] &&
+     [ "$(git -C "$hidden_repository" show HEAD:file.txt)" = "after" ] &&
+     [ "$(git -C "$hidden_repository" log -1 --pretty=%s)" = "Recovered change" ] &&
+     printf '%s\n' "$output" | grep -Fq \
+       'A complete independent file scan recovered the accurate commit contents'; then
+    pass "a complete independent scan recovers a tracked change omitted by the initial Git status"
+  else
+    fail_test "a complete independent scan recovers a tracked change omitted by the initial Git status"
+  fi
+  GIT_ROOT="$repository"
 
   printf 'second\n' >> "$repository/file.txt"
   before_head="$(git -C "$repository" rev-parse HEAD)"

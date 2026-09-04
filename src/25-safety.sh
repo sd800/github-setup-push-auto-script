@@ -11,6 +11,8 @@ WORKFLOW_REVIEW_SNAPSHOT=""
 WORKFLOW_EXPECTED_STAGED_TREE=""
 WORKFLOW_EXPECTED_INDEX_FILE=""
 WORKFLOW_EXPECTED_ORIGINAL_INDEX_TREE=""
+WORKFLOW_EXPECTED_HEAD_TREE=""
+WORKFLOW_REVIEW_RECOVERED=false
 WORKFLOW_PUSH_REFERENCE=""
 WORKFLOW_TRANSACTION_ACTIVE=false
 WORKFLOW_CHECKPOINT_ACTIVE=false
@@ -390,9 +392,11 @@ prepare_expected_staged_tree() {
   local real_index=""
   local index_directory=""
   local temporary_index=""
+  local has_head=true
 
   WORKFLOW_EXPECTED_STAGED_TREE=""
   WORKFLOW_EXPECTED_ORIGINAL_INDEX_TREE=""
+  WORKFLOW_EXPECTED_HEAD_TREE=""
   [ -z "$WORKFLOW_EXPECTED_INDEX_FILE" ] || rm -f "$WORKFLOW_EXPECTED_INDEX_FILE"
   WORKFLOW_EXPECTED_INDEX_FILE=""
   real_index="$(git -C "$GIT_ROOT" rev-parse --git-path index 2>/dev/null)" || return 1
@@ -406,23 +410,29 @@ prepare_expected_staged_tree() {
   index_directory="${real_index%/*}"
   temporary_index="$(safe_mktemp_file "$index_directory" "github-auto-index")" || return 1
 
-  if [ -f "$real_index" ]; then
-    if ! cp "$real_index" "$temporary_index"; then
+  WORKFLOW_EXPECTED_ORIGINAL_INDEX_TREE="$(git -C "$GIT_ROOT" write-tree 2>/dev/null)" || true
+  if [ -z "$WORKFLOW_EXPECTED_ORIGINAL_INDEX_TREE" ]; then
+    rm -f "$temporary_index"
+    return 1
+  fi
+
+  git -C "$GIT_ROOT" rev-parse --verify HEAD >/dev/null 2>&1 || has_head=false
+  rm -f "$temporary_index"
+  if [ "$has_head" = true ]; then
+    if ! GIT_INDEX_FILE="$temporary_index" git -C "$GIT_ROOT" read-tree HEAD; then
       rm -f "$temporary_index"
       return 1
     fi
   else
-    rm -f "$temporary_index"
     if ! GIT_INDEX_FILE="$temporary_index" git -C "$GIT_ROOT" read-tree --empty; then
       rm -f "$temporary_index"
       return 1
     fi
   fi
-
-  WORKFLOW_EXPECTED_ORIGINAL_INDEX_TREE="$(
+  WORKFLOW_EXPECTED_HEAD_TREE="$(
     GIT_INDEX_FILE="$temporary_index" git -C "$GIT_ROOT" write-tree 2>/dev/null
   )" || true
-  if [ -z "$WORKFLOW_EXPECTED_ORIGINAL_INDEX_TREE" ] ||
+  if [ -z "$WORKFLOW_EXPECTED_HEAD_TREE" ] ||
      ! GIT_INDEX_FILE="$temporary_index" git -C "$GIT_ROOT" add -A ||
      ! WORKFLOW_EXPECTED_STAGED_TREE="$(
        GIT_INDEX_FILE="$temporary_index" git -C "$GIT_ROOT" write-tree 2>/dev/null
@@ -431,10 +441,28 @@ prepare_expected_staged_tree() {
     rm -f "$temporary_index"
     WORKFLOW_EXPECTED_STAGED_TREE=""
     WORKFLOW_EXPECTED_ORIGINAL_INDEX_TREE=""
+    WORKFLOW_EXPECTED_HEAD_TREE=""
     return 1
   fi
   WORKFLOW_EXPECTED_INDEX_FILE="$temporary_index"
   return 0
+}
+
+expected_staged_tree_has_changes() {
+  [ -n "$WORKFLOW_EXPECTED_STAGED_TREE" ] &&
+    [ -n "$WORKFLOW_EXPECTED_HEAD_TREE" ] &&
+    [ "$WORKFLOW_EXPECTED_STAGED_TREE" != "$WORKFLOW_EXPECTED_HEAD_TREE" ]
+}
+
+recover_workflow_review_snapshot() {
+  [ -f "$WORKFLOW_EXPECTED_INDEX_FILE" ] || return 1
+  if ! GIT_INDEX_FILE="$WORKFLOW_EXPECTED_INDEX_FILE" \
+    git -C "$GIT_ROOT" --no-pager status \
+      --porcelain=v1 --untracked-files=all > "$WORKFLOW_REVIEW_SNAPSHOT"; then
+    return 1
+  fi
+  [ -s "$WORKFLOW_REVIEW_SNAPSHOT" ] || return 1
+  WORKFLOW_REVIEW_RECOVERED=true
 }
 
 verify_reviewed_file_tree() {

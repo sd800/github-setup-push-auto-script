@@ -6,6 +6,18 @@
 
 All notable changes to Auto Script for GitHub Setup and Push are documented in this file.
 
+## 3.12.1 - 2026-09-04
+
+### Fixed
+
+- Removed the early clean-working-tree decision based only on an empty `git status`. Every ordinary run now builds an independent Git index from `HEAD`, scans the complete non-ignored working tree, and compares the exact prospective commit tree with the current commit before deciding that no changes exist.
+- When the initial status output omits a tracked change, the script reconstructs the accurate review list from the independent index and continues through the normal commit-message confirmation instead of incorrectly switching to the existing-commit push path.
+- Stages a recovered snapshot through Git's exact tree operation after confirmation, so index hints such as `assume-unchanged` cannot make the real commit silently omit files that the independent scan recovered. The real staging area remains unchanged until confirmation.
+
+### Tests
+
+- Added focused regression coverage in which ordinary `git status` reports a clean tree for a modified tracked file marked `assume-unchanged`. It verifies both that cancellation preserves the original index and local change, and that confirmation recovers, reviews, stages, and commits the actual contents.
+
 ## 3.11.5 - 2026-09-04
 
 ### Changed
