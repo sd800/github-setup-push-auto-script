@@ -1287,7 +1287,6 @@ push_current_branch() {
     muted \
       "Latest local commit message: $latest_commit_message" \
       "最新本地提交说明：$latest_commit_message"
-    printf '\n'
     if ! ui_prompt_yes_no \
       "Continue with the GitHub push?" \
       "继续上传到 GitHub 吗？" \

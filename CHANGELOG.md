@@ -6,6 +6,12 @@
 
 All notable changes to Auto Script for GitHub Setup and Push are documented in this file.
 
+## 3.11.5 - 2026-09-04
+
+### Changed
+
+- Removed the extra blank line before the existing-commit upload question so the confirmation follows the commit message directly.
+
 ## 3.11.3 - 2026-09-04
 
 ### Changed
