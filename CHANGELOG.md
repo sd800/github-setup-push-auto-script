@@ -6,6 +6,17 @@
 
 All notable changes to Auto Script for GitHub Setup and Push are documented in this file.
 
+## 3.11.3 - 2026-09-04
+
+### Changed
+
+- Simplified the confirmation shown when a clean working tree already has a local commit. The interface now labels the commit message explicitly, hides the commit hash and redundant branch name, explains why no new commit will be created, and places a short upload question on its own line.
+- Rewrote the corresponding English and Simplified Chinese text independently for clear, natural phrasing.
+
+### Tests
+
+- Updated focused push-confirmation coverage for the concise English and Simplified Chinese output and for the absence of technical commit and branch details.
+
 ## 3.11.2 - 2026-09-01
 
 ### Fixed

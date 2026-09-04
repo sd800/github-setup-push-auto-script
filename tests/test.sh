@@ -1695,7 +1695,7 @@ test_project_release_policy() {
 
   english_version="$(sed -nE 's/^## ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' "$PROJECT_DIRECTORY/CHANGELOG.md" | sed -n '1p')"
   chinese_version="$(sed -nE 's/^## ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' "$PROJECT_DIRECTORY/CHANGELOG_zh.md" | sed -n '1p')"
-  assert_equal "3.11.2" "$english_version" "English changelog declares release 3.11.2"
+  assert_equal "3.11.3" "$english_version" "English changelog declares release 3.11.3"
   assert_equal "$english_version" "$chinese_version" "English and Chinese changelogs declare the same release"
   if [[ "$english_version" != *4* ]] &&
      [[ "$english_version" =~ ^[1-9][0-9]*\.[1-9][0-9]*\.[1-9][0-9]*$ ]]; then
@@ -2257,11 +2257,27 @@ test_focused_ssh_and_launcher() {
   output="$(push_current_branch false 2>&1 <<< 'n')" || status=$?
   if [ "$status" -eq 2 ] &&
      [ ! -e "$push_marker" ] &&
-     printf '%s\n' "$output" | grep -Fq 'Latest local commit:' &&
+     printf '%s\n' "$output" | grep -Fq 'Latest local commit message: baseline' &&
+     printf '%s\n' "$output" | grep -Fq 'Continue with the GitHub push? [y/N]:' &&
+     ! printf '%s\n' "$output" | grep -Fq 'Current branch:' &&
+     ! printf '%s\n' "$output" | grep -Fq "$(git -C "$binding_repository" rev-parse --short HEAD)" &&
      printf '%s\n' "$output" | grep -Fq 'Upload canceled before connecting to GitHub'; then
-    pass "a pre-existing local commit cannot be pushed after upload confirmation is declined"
+    pass "English confirmation clearly labels the message and hides technical commit details"
   else
-    fail_test "a pre-existing local commit cannot be pushed after upload confirmation is declined"
+    fail_test "English confirmation clearly labels the message and hides technical commit details"
+  fi
+  UI_LANGUAGE="zh"
+  status=0
+  output="$(push_current_branch false 2>&1 <<< 'n')" || status=$?
+  UI_LANGUAGE="en"
+  if [ "$status" -eq 2 ] &&
+     [ ! -e "$push_marker" ] &&
+     printf '%s\n' "$output" | grep -Fq '最新本地提交说明：baseline' &&
+     printf '%s\n' "$output" | grep -Fq '继续上传到 GitHub 吗？ [是(y)/否(n)，默认否]:' &&
+     ! printf '%s\n' "$output" | grep -Fq '当前分支：'; then
+    pass "Simplified Chinese confirmation is concise and clearly labels the commit message"
+  else
+    fail_test "Simplified Chinese confirmation is concise and clearly labels the commit message"
   fi
   status=0
   push_head="$(git -C "$binding_repository" rev-parse HEAD)"

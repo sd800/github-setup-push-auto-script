@@ -1243,7 +1243,7 @@ push_current_branch() {
   local confirmed_commit_created_this_run="${1:-false}"
   local branch=""
   local push_head=""
-  local latest_commit=""
+  local latest_commit_message=""
   local push_reference=""
   local output=""
   local output_file=""
@@ -1280,17 +1280,17 @@ push_current_branch() {
     "$CURRENT_REPOSITORY_OWNER" \
     "$CURRENT_REPOSITORY_NAME"
   if [ "$confirmed_commit_created_this_run" != true ]; then
-    latest_commit="$(git -C "$GIT_ROOT" log -1 --format='%h %s' "$push_head" 2>/dev/null || true)"
+    latest_commit_message="$(git -C "$GIT_ROOT" log -1 --format='%s' "$push_head" 2>/dev/null || true)"
     muted \
-      "No new commit was created during this run." \
-      "本次运行没有创建新提交。"
-    muted "Current branch: $branch" "当前分支：$branch"
+      "No new file changes need to be committed, so this run will not create a commit." \
+      "当前没有需要提交的新文件改动，因此本次不会创建提交。"
     muted \
-      "Latest local commit: $latest_commit" \
-      "最新本地提交：$latest_commit"
+      "Latest local commit message: $latest_commit_message" \
+      "最新本地提交说明：$latest_commit_message"
+    printf '\n'
     if ! ui_prompt_yes_no \
-      "Push the current local branch, ending at the commit shown above, to GitHub?" \
-      "确认把以上述提交为最新提交的当前本地分支上传到 GitHub 吗？" \
+      "Continue with the GitHub push?" \
+      "继续上传到 GitHub 吗？" \
       "no"; then
       warn \
         "Upload canceled before connecting to GitHub. All local commits remain unchanged." \
