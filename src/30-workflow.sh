@@ -37,6 +37,22 @@ require_core_commands() {
   fi
 }
 
+check_before_git_init() {
+  local directory="$1"
+
+  if [ -e "$directory/.git" ] || [ -L "$directory/.git" ] ||
+     [ "$(git -C "$directory" rev-parse --is-bare-repository 2>/dev/null || true)" = true ]; then
+    error_message \
+      "This folder already contains Git metadata, but Git could not open it as a working repository: $(human_path "$directory")" \
+      "这个文件夹已有 Git 记录，但 Git 无法把它作为工作仓库打开：$(human_path "$directory")"
+    muted \
+      "No git init was run. Repair the existing repository first, or select its working directory if this is a bare repository." \
+      "脚本没有执行 git init。请先修复现有仓库；如果这是不含工作文件的裸仓库，请改为选择实际的工作目录。"
+    return 1
+  fi
+  return 0
+}
+
 locate_project() {
   local initialize="${1:-yes}"
   local existing_root=""
@@ -59,6 +75,7 @@ locate_project() {
   if [ "$initialize" != "yes" ]; then
     return 1
   fi
+  check_before_git_init "$SCRIPT_DIRECTORY" || return 1
 
   heading "Prepare the local Git repository" "准备本地 Git 仓库"
   warn \
@@ -86,7 +103,7 @@ git_operation_in_progress() {
   for state_name in MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD; do
     [ -e "$git_directory/$state_name" ] && return 0
   done
-  for state_name in rebase-merge rebase-apply; do
+  for state_name in rebase-merge rebase-apply sequencer; do
     [ -d "$git_directory/$state_name" ] && return 0
   done
   return 1
@@ -386,8 +403,8 @@ load_established_project_binding() {
   same_existing_file "$saved_key" "$alias_key" || return 1
 
   expected_url="git@${saved_alias}:${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME}.git"
-  fetch_url="$(git -C "$GIT_ROOT" remote get-url origin 2>/dev/null || true)"
-  push_url="$(git -C "$GIT_ROOT" remote get-url --push origin 2>/dev/null || true)"
+  fetch_url="$(git -C "$GIT_ROOT" remote get-url --all origin 2>/dev/null || true)"
+  push_url="$(git -C "$GIT_ROOT" remote get-url --push --all origin 2>/dev/null || true)"
   [ "$fetch_url" = "$expected_url" ] || return 1
   [ "$push_url" = "$expected_url" ] || return 1
 
@@ -615,7 +632,7 @@ save_project_binding() {
   git -C "$GIT_ROOT" config --local github-auto.engine "$ENGINE_PATH" || return 1
 
   if git -C "$GIT_ROOT" remote get-url origin >/dev/null 2>&1; then
-    git -C "$GIT_ROOT" remote set-url origin "$remote_url" || return 1
+    git -C "$GIT_ROOT" config --local --replace-all remote.origin.url "$remote_url" || return 1
   else
     git -C "$GIT_ROOT" remote add origin "$remote_url" || return 1
   fi
@@ -647,15 +664,37 @@ create_pinned_ssh_wrapper() {
   chmod 700 "$PINNED_SSH_WRAPPER"
 }
 
+require_single_origin_push_target() {
+  local expected_url="git@${BOUND_SSH_ALIAS}:${CURRENT_REPOSITORY_OWNER}/${CURRENT_REPOSITORY_NAME}.git"
+  local push_urls=""
+
+  require_repository_account_match || return 1
+  push_urls="$(git -C "$GIT_ROOT" remote get-url --push --all origin 2>/dev/null)" || return 1
+  [ "$push_urls" = "$expected_url" ] && return 0
+  error_message \
+    "origin does not have exactly one push address matching the selected account and repository. No upload was attempted." \
+    "origin 的上传地址不是当前所选账号和仓库的唯一对应地址。本次没有上传。"
+  muted \
+    "Run ./$SCRIPT_NAME update to save the intended repository again. If this persists, check Git configuration includes and URL rewrite rules for extra push destinations." \
+    "请运行 ./${SCRIPT_NAME} update，重新保存目标仓库。如果仍然出现此提示，请检查 Git 引入的其他配置文件和地址重写规则，确认它们没有增加额外的上传目标。"
+  return 1
+}
+
 run_git_with_identity() {
   local private_key="$1"
   shift
+  if [ "${1:-}" = push ]; then
+    require_single_origin_push_target || return 1
+  fi
 
   create_pinned_ssh_wrapper || return 1
+  # Explicit refspecs alone do not disable followTags or mirror configuration.
+  # These process-local push settings do not affect read-only Git operations.
   GITHUB_AUTO_IDENTITY_FILE="$private_key" \
-    GIT_SSH_COMMAND="$PINNED_SSH_WRAPPER" \
+    GIT_SSH_COMMAND="$(shell_single_quoted_value "$PINNED_SSH_WRAPPER")" \
     GIT_SSH_VARIANT=ssh \
-    git -C "$GIT_ROOT" "$@"
+    git -C "$GIT_ROOT" -c remote.origin.mirror=false \
+      -c push.followTags=false -c push.recurseSubmodules=no "$@"
   local status=$?
   rm -rf "$PINNED_SSH_DIRECTORY"
   return "$status"
@@ -860,6 +899,14 @@ scan_possible_embedded_projects() {
   local top_level_names=()
   local top_level_counts=()
 
+  # Inspect the same prospective snapshot shown to the user, including paths
+  # that are only intent-to-add in the real index. After staging, use the real
+  # index because the temporary review index has already been removed.
+  if [ -n "$WORKFLOW_EXPECTED_INDEX_FILE" ] && [ -f "$WORKFLOW_EXPECTED_INDEX_FILE" ]; then
+    local GIT_INDEX_FILE="$WORKFLOW_EXPECTED_INDEX_FILE"
+    export GIT_INDEX_FILE
+  fi
+
   POSSIBLE_EMBEDDED_PROJECT_DIRECTORIES=()
   POSSIBLE_EMBEDDED_PROJECT_MARKERS=()
   POSSIBLE_EMBEDDED_PROJECT_COUNT=0
@@ -886,21 +933,28 @@ scan_possible_embedded_projects() {
     fi
     top_level_counts[$count_index]=$((top_level_counts[$count_index] + 1))
 
-    case "$entry" in
+    if [ -d "$GIT_ROOT/$entry" ]; then
+      directory="$entry"
+    else
+      case "$entry" in
       */*)
         directory="${entry%/*}"
         ;;
       *)
         directory="$entry"
         ;;
-    esac
+      esac
+    fi
     [ -d "$GIT_ROOT/$directory" ] || continue
     [ ! -L "$GIT_ROOT/$directory" ] || continue
     possible_embedded_project_index "$directory" >/dev/null 2>&1 && continue
     marker="$(top_level_project_marker "$GIT_ROOT/$directory" || true)"
     [ -n "$marker" ] || continue
+    if [ "$marker" = .git ] && registered_submodule_path "$directory"; then
+      continue
+    fi
     if [ "$has_head" = true ] &&
-       [ -n "$(git -C "$GIT_ROOT" ls-tree -r --name-only HEAD -- "$directory/" 2>/dev/null)" ]; then
+       [ -n "$(git --literal-pathspecs -C "$GIT_ROOT" ls-tree -r --name-only HEAD -- "$directory/" 2>/dev/null)" ]; then
       continue
     fi
     POSSIBLE_EMBEDDED_PROJECT_DIRECTORIES[$POSSIBLE_EMBEDDED_PROJECT_COUNT]="$directory"
@@ -921,7 +975,7 @@ scan_possible_embedded_projects() {
        [ ! -L "$GIT_ROOT/$top_level" ] &&
        ! possible_embedded_project_index "$top_level" >/dev/null 2>&1 &&
        { [ "$has_head" = false ] ||
-         [ -z "$(git -C "$GIT_ROOT" ls-tree -r --name-only HEAD -- "$top_level/" 2>/dev/null)" ]; }; then
+         [ -z "$(git --literal-pathspecs -C "$GIT_ROOT" ls-tree -r --name-only HEAD -- "$top_level/" 2>/dev/null)" ]; }; then
       POSSIBLE_EMBEDDED_PROJECT_DIRECTORIES[$POSSIBLE_EMBEDDED_PROJECT_COUNT]="$top_level"
       POSSIBLE_EMBEDDED_PROJECT_MARKERS[$POSSIBLE_EMBEDDED_PROJECT_COUNT]="many-new-files:${top_level_counts[$index]}"
       POSSIBLE_EMBEDDED_PROJECT_COUNT=$((POSSIBLE_EMBEDDED_PROJECT_COUNT + 1))
@@ -1075,13 +1129,28 @@ review_possible_embedded_projects() {
   return 2
 }
 
+registered_submodule_path() {
+  local path="$1"
+  local record=""
+  [ -f "$GIT_ROOT/.gitmodules" ] || return 1
+  case "$(git --literal-pathspecs -C "$GIT_ROOT" ls-files --stage -- "$path")" in
+    160000' '*) ;;
+    *) return 1 ;;
+  esac
+  while IFS= read -r -d '' record; do
+    [ "${record#*$'\n'}" = "$path" ] && return 0
+  done < <(git -C "$GIT_ROOT" config -z --file .gitmodules --get-regexp '^submodule\..*\.path$')
+  return 1
+}
+
 list_dirty_submodules() {
   [ -f "$GIT_ROOT/.gitmodules" ] || return 0
   git -C "$GIT_ROOT" submodule foreach --quiet --recursive '
-    if test -n "$(git status --porcelain --untracked-files=all)"; then
+    submodule_status=$(git -c core.fsmonitor=false status --porcelain --untracked-files=all) || exit 1
+    if test -n "$submodule_status"; then
       printf "%s\n" "${displaypath:-$sm_path}"
     fi
-  ' 2>/dev/null || true
+  '
 }
 
 prepare_and_commit() {
@@ -1120,7 +1189,13 @@ prepare_and_commit() {
   fi
 
   [ -s "$WORKFLOW_REVIEW_SNAPSHOT" ] || initial_status_empty=true
-  dirty_submodules="$(list_dirty_submodules)"
+  if ! dirty_submodules="$(list_dirty_submodules)"; then
+    clear_workflow_review_snapshot
+    error_message \
+      "Git could not inspect the submodules. No files were staged, committed, or pushed; resolve the Git error above and retry." \
+      "Git 无法完成子模块检查。本次没有暂存、提交或上传文件；请先处理上方的 Git 错误，再重新运行。"
+    return 1
+  fi
   if [ -n "$dirty_submodules" ]; then
     clear_workflow_review_snapshot
     heading "Uncommitted changes inside a Git submodule" "Git 子模块中还有未提交的改动"
@@ -1265,7 +1340,7 @@ prepare_and_commit() {
   info \
     "Staging all confirmed changes with git add -A..." \
     "正在执行 git add -A，暂存刚才确认的全部改动……"
-  if ! prepare_real_index_for_exact_staging || ! git -C "$GIT_ROOT" add -A; then
+  if ! prepare_real_index_for_exact_staging || ! git -C "$GIT_ROOT" -c core.fsmonitor=false add -A; then
     clear_workflow_review_snapshot
     error_message \
       "git add -A failed. Git may have staged some paths before stopping; inspect git status. No commit or push was attempted." \
@@ -1306,7 +1381,7 @@ prepare_and_commit() {
     git -C "$GIT_ROOT" \
     -c "user.name=$WORKFLOW_EXPECTED_AUTHOR_NAME" \
     -c "user.email=$WORKFLOW_EXPECTED_EMAIL" \
-    commit -m "$COMMIT_MESSAGE"; then
+    commit --cleanup=verbatim -m "$COMMIT_MESSAGE"; then
     error_message \
       "The commit failed. The selected changes remain staged for inspection, and no push was attempted." \
       "提交失败。本次选择的改动仍保留在暂存区，便于检查；脚本没有执行上传。"

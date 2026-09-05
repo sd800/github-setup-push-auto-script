@@ -1343,6 +1343,22 @@ test_historical_release_import() {
   local risk_output=""
   local working_readme_before=""
   local divergent_file_before=""
+  local PATH="$TEST_TEMPORARY/history-bin:$PATH"
+  local FAKE_SSH_REPOSITORY="$remote"
+
+  # Keep the production account/URL guard active and replace transport only.
+  mkdir -p "$TEST_TEMPORARY/history-bin"
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf 'for argument in "$@"; do\n'
+    printf '  case "$argument" in\n'
+    printf '    *git-upload-pack*) exec git-upload-pack "$FAKE_SSH_REPOSITORY" ;;\n'
+    printf '    *git-receive-pack*) exec git-receive-pack "$FAKE_SSH_REPOSITORY" ;;\n'
+    printf '  esac\n'
+    printf 'done\nexit 1\n'
+  } > "$TEST_TEMPORARY/history-bin/ssh"
+  chmod 755 "$TEST_TEMPORARY/history-bin/ssh"
+  export PATH FAKE_SSH_REPOSITORY
 
   mkdir -p "$first/.git" "$second/nested/.git" "$releases/notes"
   printf '# first\n' > "$first/README.md"
@@ -1438,7 +1454,7 @@ test_historical_release_import() {
   BOUND_EMAIL="history-user@example.com"
   BOUND_SSH_ALIAS="github-history-user"
   BOUND_IDENTITY_FILE="$fake_key"
-  HISTORY_REMOTE_URL="$remote"
+  HISTORY_REMOTE_URL="git@github-history-user:history-user/history-repository.git"
   CURRENT_REPOSITORY_OWNER="history-user"
   CURRENT_REPOSITORY_NAME="history-repository"
   HISTORY_ADD_GITIGNORE=true
@@ -1696,7 +1712,7 @@ test_project_release_policy() {
 
   english_version="$(sed -nE 's/^## ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' "$PROJECT_DIRECTORY/CHANGELOG.md" | sed -n '1p')"
   chinese_version="$(sed -nE 's/^## ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' "$PROJECT_DIRECTORY/CHANGELOG_zh.md" | sed -n '1p')"
-  assert_equal "3.13.1" "$english_version" "English changelog declares release 3.13.1"
+  assert_equal "3.15.1" "$english_version" "English changelog declares release 3.15.1"
   assert_equal "$english_version" "$chinese_version" "English and Chinese changelogs declare the same release"
   if [[ "$english_version" != *4* ]] &&
      [[ "$english_version" =~ ^[1-9][0-9]*\.[1-9][0-9]*\.[1-9][0-9]*$ ]]; then

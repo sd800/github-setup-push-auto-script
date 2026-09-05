@@ -6,6 +6,26 @@
 
 All notable changes to Auto Script for GitHub Setup and Push are documented in this file.
 
+## 3.15.1 - 2026-09-05
+
+### Fixed
+
+- Rebuilt commit previews from actual index entries instead of `HEAD`, without copying cached filesystem timestamps. Forced ignored additions, intent-to-add files, staged removals, and staged changes outside a sparse checkout now match native `git add -A`; cancellation still preserves the real staging area.
+- Made the embedded-project review use the same prospective index as the file review. Fixed missed repositories nested several directories deep and false rejection of newly registered submodules. Failed submodule inspections now stop the operation instead of appearing clean.
+- Validate every effective `origin` address, not just the first one, and refuse extra or mismatched push destinations before connecting. Normalize locally saved URL lists during binding, and disable inherited mirror, automatic-tag, and recursive-submodule push settings for script operations without changing saved preferences.
+- Quote the SSH wrapper path correctly when temporary directories contain spaces or apostrophes.
+- Preserve confirmed commit messages regardless of `commit.cleanup`, including messages beginning with `#`. Commit hooks remain enabled and their results are still checked before upload.
+- Stop before `git init` when an existing working directory has unreadable Git metadata or is a bare repository, including during historical handoff. Detect unfinished multi-commit cherry-pick and revert sequences even when no individual conflict marker remains.
+
+### Performance
+
+- Removed per-file Git subprocesses for ordinary index-hint preparation. A 150-file change now requires one hint-list scan rather than hundreds of Git calls; affected hidden flags are cleared in batches while unrelated flags remain unchanged.
+- Kept the frozen `g.sh` seed unchanged. All fixes are delivered through the central modules with no new dependency or ordinary-path network precheck.
+
+### Tests
+
+- Added an isolated, offline regression script covering staged/index edge cases, sparse checkouts, nested repositories and submodules, SSH path quoting, single-destination pushes, inherited push settings, message cleanup, damaged metadata, sequencer state, literal filenames, and bulk hint preparation.
+
 ## 3.13.1 - 2026-09-04
 
 ### Changed

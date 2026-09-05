@@ -230,8 +230,8 @@ capture_workflow_checkpoint() {
   WORKFLOW_EXPECTED_COMMON_DIRECTORY="$WORKFLOW_COMMON_DIRECTORY"
   WORKFLOW_EXPECTED_SYMBOLIC_HEAD="$(git -C "$GIT_ROOT" symbolic-ref -q HEAD 2>/dev/null || true)"
   WORKFLOW_EXPECTED_HEAD="$(workflow_head_value)"
-  WORKFLOW_EXPECTED_ORIGIN_FETCH="$(git -C "$GIT_ROOT" remote get-url origin 2>/dev/null || true)"
-  WORKFLOW_EXPECTED_ORIGIN_PUSH="$(git -C "$GIT_ROOT" remote get-url --push origin 2>/dev/null || true)"
+  WORKFLOW_EXPECTED_ORIGIN_FETCH="$(git -C "$GIT_ROOT" remote get-url --all origin 2>/dev/null || true)"
+  WORKFLOW_EXPECTED_ORIGIN_PUSH="$(git -C "$GIT_ROOT" remote get-url --push --all origin 2>/dev/null || true)"
   WORKFLOW_EXPECTED_USERNAME="$(git -C "$GIT_ROOT" config --local --get github-auto.username 2>/dev/null || true)"
   WORKFLOW_EXPECTED_AUTHOR_NAME="$(git -C "$GIT_ROOT" config --local --get user.name 2>/dev/null || true)"
   WORKFLOW_EXPECTED_EMAIL="$(git -C "$GIT_ROOT" config --local --get user.email 2>/dev/null || true)"
@@ -303,8 +303,8 @@ verify_workflow_checkpoint() {
     workflow_checkpoint_change "the current commit" "当前提交" "$stage_en" "$stage_zh"
     return 1
   fi
-  if [ "$(git -C "$GIT_ROOT" remote get-url origin 2>/dev/null || true)" != "$WORKFLOW_EXPECTED_ORIGIN_FETCH" ] ||
-     [ "$(git -C "$GIT_ROOT" remote get-url --push origin 2>/dev/null || true)" != "$WORKFLOW_EXPECTED_ORIGIN_PUSH" ]; then
+  if [ "$(git -C "$GIT_ROOT" remote get-url --all origin 2>/dev/null || true)" != "$WORKFLOW_EXPECTED_ORIGIN_FETCH" ] ||
+     [ "$(git -C "$GIT_ROOT" remote get-url --push --all origin 2>/dev/null || true)" != "$WORKFLOW_EXPECTED_ORIGIN_PUSH" ]; then
     workflow_checkpoint_change "the origin address" "origin 地址" "$stage_en" "$stage_zh"
     return 1
   fi
@@ -408,6 +408,7 @@ prepare_expected_staged_tree() {
   local index_directory=""
   local temporary_index=""
   local has_head=true
+  local entry=""
 
   WORKFLOW_EXPECTED_STAGED_TREE=""
   WORKFLOW_EXPECTED_ORIGINAL_INDEX_TREE=""
@@ -438,41 +439,35 @@ prepare_expected_staged_tree() {
     WORKFLOW_EXPECTED_HEAD_TREE="$(
       git -C "$GIT_ROOT" rev-parse 'HEAD^{tree}' 2>/dev/null
     )" || true
-    if [ "$(git -C "$GIT_ROOT" config --bool core.sparseCheckout 2>/dev/null || true)" = true ]; then
-      WORKFLOW_SPARSE_CHECKOUT=true
-      if ! cp "$real_index" "$temporary_index" ||
-         ! GIT_INDEX_FILE="$temporary_index" git -C "$GIT_ROOT" reset -q HEAD --; then
-        rm -f "$temporary_index"
-        return 1
-      fi
-    elif ! GIT_INDEX_FILE="$temporary_index" git -C "$GIT_ROOT" read-tree HEAD; then
-      rm -f "$temporary_index"
-      return 1
-    fi
   else
-    if ! GIT_INDEX_FILE="$temporary_index" git -C "$GIT_ROOT" read-tree --empty; then
-      rm -f "$temporary_index"
-      return 1
-    fi
     WORKFLOW_EXPECTED_HEAD_TREE="$(
-      GIT_INDEX_FILE="$temporary_index" git -C "$GIT_ROOT" write-tree 2>/dev/null
+      git -C "$GIT_ROOT" hash-object -t tree --stdin < /dev/null
     )" || true
   fi
-  if [ "$WORKFLOW_SPARSE_CHECKOUT" = true ]; then
-    if ! GIT_INDEX_FILE="$temporary_index" git -C "$GIT_ROOT" ls-files -z |
-       GIT_INDEX_FILE="$temporary_index" git -C "$GIT_ROOT" \
-         update-index --no-assume-unchanged -z --stdin; then
-      rm -f "$temporary_index"
-      return 1
-    fi
-  elif ! GIT_INDEX_FILE="$temporary_index" git -C "$GIT_ROOT" ls-files -z |
-       GIT_INDEX_FILE="$temporary_index" git -C "$GIT_ROOT" \
-         update-index --no-assume-unchanged --no-skip-worktree -z --stdin; then
+  # Reconstruct tracking entries, not HEAD or cached filesystem timestamps.
+  # This keeps forced additions, intent-to-add and staged removals exactly as
+  # native git add -A sees them, while forcing a fresh scan of visible files.
+  if ! GIT_INDEX_FILE="$temporary_index" git -C "$GIT_ROOT" read-tree --empty ||
+     ! git -C "$GIT_ROOT" ls-files --stage -z |
+       GIT_INDEX_FILE="$temporary_index" git -C "$GIT_ROOT" update-index -z --index-info; then
     rm -f "$temporary_index"
     return 1
   fi
+  if [ "$(git -C "$GIT_ROOT" config --bool core.sparseCheckout 2>/dev/null || true)" = true ]; then
+    WORKFLOW_SPARSE_CHECKOUT=true
+  fi
+  if [ "$WORKFLOW_SPARSE_CHECKOUT" = true ]; then
+    if ! git -C "$GIT_ROOT" ls-files -v -z |
+       { while IFS= read -r -d '' entry; do
+           case "$entry" in [Ss]' '*) printf '%s\0' "${entry:2}" ;; esac
+         done; } |
+       GIT_INDEX_FILE="$temporary_index" git -C "$GIT_ROOT" update-index --skip-worktree -z --stdin; then
+      rm -f "$temporary_index"
+      return 1
+    fi
+  fi
   if [ -z "$WORKFLOW_EXPECTED_HEAD_TREE" ] ||
-     ! GIT_INDEX_FILE="$temporary_index" git -C "$GIT_ROOT" add -A ||
+     ! GIT_INDEX_FILE="$temporary_index" git -C "$GIT_ROOT" -c core.fsmonitor=false add -A ||
      ! WORKFLOW_EXPECTED_STAGED_TREE="$(
        GIT_INDEX_FILE="$temporary_index" git -C "$GIT_ROOT" write-tree 2>/dev/null
      )" ||
@@ -496,7 +491,7 @@ expected_staged_tree_has_changes() {
 write_exact_workflow_review_snapshot() {
   [ -f "$WORKFLOW_EXPECTED_INDEX_FILE" ] || return 1
   if ! GIT_INDEX_FILE="$WORKFLOW_EXPECTED_INDEX_FILE" \
-    git -C "$GIT_ROOT" --no-pager status \
+    git -C "$GIT_ROOT" -c core.fsmonitor=false --no-pager status \
       --porcelain=v1 --untracked-files=all > "$WORKFLOW_REVIEW_SNAPSHOT"; then
     return 1
   fi
@@ -506,27 +501,34 @@ write_exact_workflow_review_snapshot() {
 prepare_real_index_for_exact_staging() {
   local changed_paths=""
   local path=""
+  local entry=""
+  local result=0
 
   changed_paths="$(safe_mktemp_file "${TMPDIR:-/tmp}" "github-auto-paths")" || return 1
-  if ! git -C "$GIT_ROOT" diff-tree -r --no-commit-id --name-only -z \
-    "$WORKFLOW_EXPECTED_HEAD_TREE" "$WORKFLOW_EXPECTED_STAGED_TREE" > "$changed_paths"; then
-    rm -f "$changed_paths"
-    return 1
-  fi
-  while IFS= read -r -d '' path; do
-    if git -C "$GIT_ROOT" ls-files --error-unmatch -- "$path" >/dev/null 2>&1; then
-      if ! git -C "$GIT_ROOT" update-index --no-assume-unchanged -- "$path"; then
-        rm -f "$changed_paths"
-        return 1
-      fi
-      if [ "$WORKFLOW_SPARSE_CHECKOUT" != true ] &&
-         ! git -C "$GIT_ROOT" update-index --no-skip-worktree -- "$path"; then
-        rm -f "$changed_paths"
-        return 1
-      fi
+  # Ordinary changed files need no index-hint work. Inspect only hidden entries
+  # and clear the affected ones in a single batch, not several Git calls/file.
+  while IFS= read -r -d '' entry; do
+    case "$entry" in [a-zS]' '*) ;; *) continue ;; esac
+    path="${entry:2}"
+    result=0
+    git --literal-pathspecs -C "$GIT_ROOT" diff-tree --quiet \
+      "$WORKFLOW_EXPECTED_HEAD_TREE" "$WORKFLOW_EXPECTED_STAGED_TREE" -- "$path" || result=$?
+    if [ "$result" -eq 1 ]; then
+      printf '%s\0' "$path" >> "$changed_paths"
+    elif [ "$result" -ne 0 ]; then
+      rm -f "$changed_paths"
+      return 1
     fi
-  done < "$changed_paths"
+  done < <(git -C "$GIT_ROOT" ls-files -v -z)
+  result=0
+  if [ -s "$changed_paths" ]; then
+    git -C "$GIT_ROOT" update-index --no-assume-unchanged -z --stdin < "$changed_paths" || result=$?
+    if [ "$result" -eq 0 ] && [ "$WORKFLOW_SPARSE_CHECKOUT" != true ]; then
+      git -C "$GIT_ROOT" update-index --no-skip-worktree -z --stdin < "$changed_paths" || result=$?
+    fi
+  fi
   rm -f "$changed_paths"
+  return "$result"
 }
 
 verify_reviewed_file_tree() {
@@ -535,7 +537,7 @@ verify_reviewed_file_tree() {
   [ -f "$WORKFLOW_EXPECTED_INDEX_FILE" ] || return 1
   current_index_tree="$(git -C "$GIT_ROOT" write-tree 2>/dev/null || true)"
   if [ "$current_index_tree" = "$WORKFLOW_EXPECTED_ORIGINAL_INDEX_TREE" ] &&
-     GIT_INDEX_FILE="$WORKFLOW_EXPECTED_INDEX_FILE" git -C "$GIT_ROOT" diff --quiet -- &&
+     GIT_INDEX_FILE="$WORKFLOW_EXPECTED_INDEX_FILE" git -C "$GIT_ROOT" -c core.fsmonitor=false diff --quiet -- &&
      [ -z "$(
        GIT_INDEX_FILE="$WORKFLOW_EXPECTED_INDEX_FILE" \
          git -C "$GIT_ROOT" ls-files --others --exclude-standard 2>/dev/null
@@ -603,7 +605,7 @@ verify_staging_finished_cleanly() {
   staged_tree="$(git -C "$GIT_ROOT" write-tree 2>/dev/null || true)"
   if [ -z "$WORKFLOW_EXPECTED_STAGED_TREE" ] ||
      [ "$staged_tree" != "$WORKFLOW_EXPECTED_STAGED_TREE" ] ||
-     ! git -C "$GIT_ROOT" diff --quiet -- ||
+     ! git -C "$GIT_ROOT" -c core.fsmonitor=false diff --quiet -- ||
      [ -n "$(git -C "$GIT_ROOT" ls-files --others --exclude-standard 2>/dev/null)" ] ||
      ! verify_staged_project_directories; then
     error_message \

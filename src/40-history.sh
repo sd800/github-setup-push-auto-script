@@ -1300,12 +1300,12 @@ history_build_repository() {
       if ! GIT_AUTHOR_NAME="$BOUND_USERNAME" GIT_AUTHOR_EMAIL="$BOUND_EMAIL" \
         GIT_COMMITTER_NAME="$BOUND_USERNAME" GIT_COMMITTER_EMAIL="$BOUND_EMAIL" \
         GIT_AUTHOR_DATE="$commit_date" GIT_COMMITTER_DATE="$commit_date" \
-        git -C "$work_directory" commit --allow-empty -q -m "$commit_message"; then
+        git -C "$work_directory" commit --cleanup=verbatim --allow-empty -q -m "$commit_message"; then
         return 1
       fi
     elif ! GIT_AUTHOR_NAME="$BOUND_USERNAME" GIT_AUTHOR_EMAIL="$BOUND_EMAIL" \
       GIT_COMMITTER_NAME="$BOUND_USERNAME" GIT_COMMITTER_EMAIL="$BOUND_EMAIL" \
-      git -C "$work_directory" commit --allow-empty -q -m "$commit_message"; then
+      git -C "$work_directory" commit --cleanup=verbatim --allow-empty -q -m "$commit_message"; then
       return 1
     fi
     if [ "$(git -C "$work_directory" show -s --format='%T' HEAD 2>/dev/null || true)" != "$expected_tree" ] ||
@@ -1439,6 +1439,7 @@ history_link_working_directory() (
       return 1
     fi
   else
+    check_before_git_init "$target" || return 1
     advanced_info \
       "This existing working directory has no Git metadata, so git init will create it without changing project files." \
       "这个现有工作目录还没有 Git 记录；接下来会执行 git init，但不会改动任何项目文件。"

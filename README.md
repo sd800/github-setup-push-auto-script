@@ -33,6 +33,7 @@ git-auto/
 |   |-- 00-core.sh
 |   |-- 10-ssh.sh
 |   |-- 20-repository.sh
+|   |-- 25-safety.sh
 |   |-- 30-workflow.sh
 |   |-- 40-history.sh
 |   |-- 50-update.sh
@@ -151,12 +152,16 @@ The default workflow follows the state of the project:
 5. Read `origin` to determine the exact GitHub `owner/repository`. Ask for a repository address only when `origin` does not identify one.
 6. Reuse the fast path only when the saved owner, commit name, email, SSH Host, exact private key, and both `origin` URLs agree. Otherwise repair only the incomplete local settings without an online precheck.
 7. Use only the account whose username matches the repository owner, and pin its one local SSH key. A mismatched account or default `github.com` key is never used as a fallback.
-8. Build an isolated Git index from `HEAD` and scan the complete non-ignored working tree before deciding whether changes exist. Sparse-checkout rules are preserved, while Git index hints cannot hide a changed file. The exact prospective commit tree is the one list shown for confirmation; the real staging area remains untouched at this point.
+8. Rebuild an isolated Git index from the current tracked entries, without reusing cached file timestamps, then scan the working tree as `git add -A` would. This preserves deliberately staged ignored files, staged removals, and sparse-checkout boundaries while exposing changes hidden by index hints. Show this exact prospective commit tree for confirmation without changing the real staging area.
 9. After commit-message confirmation, recheck the repository, branch, HEAD, origin, account binding, Git index, file contents, and untracked-file set, then run `git add -A`. Require the staged tree and the created commit to match the confirmed files, message, and account identity before pushing that exact commit object to the explicitly named current branch on `origin`. If no commit is created during this run, show the latest local commit message and require a separate confirmation before connecting to GitHub.
 10. Keep optional SSH authentication, account discovery, and read-only repository checks under Advanced features.
 11. If push fails, keep the local commit and explain whether GitHub reported divergent history, an identity or repository rejection, a connection problem, or another exact Git error. Ordinary pushes never use force.
 
 A clean repository creates no unnecessary commit. An empty `git status` is not accepted by itself: the independent full scan must also produce the same tree as `HEAD`. If quick status omits one or several tracked changes, the exact review still includes them together with ordinary changes. A clean sparse checkout is not mistaken for file deletion. If staged and working-tree changes cancel each other, the script stops without altering the existing index. If the repository truly is clean and already contains a local commit, `./g.sh` shows its commit message and asks before any push. An empty repository with no project files stops without attempting a push. Canceling at the commit prompt happens before staging and preserves any changes that were already staged.
+
+If a folder already contains Git metadata that cannot be opened, the script stops instead of initializing over it. Unfinished multi-commit cherry-pick and revert sequences also block ordinary operations, even after an individual conflict has been resolved and committed. New unregistered nested repositories are blocked at any directory depth; correctly registered submodules remain supported, and a failed submodule inspection is not treated as a clean result.
+
+Your confirmed commit message is preserved as entered, including a leading `#`, regardless of Git's message-cleanup preference. Hooks still run; if a hook changes the confirmed message or contents, automatic upload stops.
 
 ## GitHub account setup
 
@@ -182,6 +187,8 @@ Repository-specific values remain only in that repository's `.git/config`: usern
 This strict owner-account workflow intentionally stops when `owner/repository` belongs to a different username. It never treats the ability to read a public repository as permission to bind or push it from another configured account.
 
 Ordinary commands trust the explicit local account-to-key mapping and let `git push` return the remote result. When an older or manually named SSH Host needs to be identified, use the Advanced online diagnostic; it verifies the actual GitHub username and creates a stable username-based alias without replacing the old Host.
+
+Every upload requires exactly one effective `origin` push address matching the selected account and repository. Extra destinations, including those introduced by included Git configuration or URL rewrites, stop the upload. The script also disables mirror pushes, automatic tag following, and recursive submodule pushes for its own Git commands without changing your saved preferences. Only the explicitly selected branch is uploaded.
 
 ## Repository address input
 
@@ -279,6 +286,8 @@ Run the isolated test suite with:
 
 ```bash
 ./tests/test.sh
+bash tests/test.sh --commit-confirmation
+bash tests/audit-regressions.sh
 ```
 
 Tests use temporary home folders, private profiles, Git repositories, SSH configuration, and simulated SSH transport. They cover the direct push path, full setup, account isolation, versioned commits, and push-failure explanations without using the real private profile or modifying real GitHub repositories.
